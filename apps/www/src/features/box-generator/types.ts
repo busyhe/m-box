@@ -21,6 +21,40 @@ export type BoxParams = {
   cavityDepthMm: number
 }
 
+/** 基础图形种类 */
+export type ShapeKind =
+  | 'circle'
+  | 'rect'
+  | 'hexagon'
+  | 'ellipse'
+  | 'slot'
+  | 'triangle'
+  | 'octagon'
+  | 'diamond'
+
+/** 无需上传模型即可添加的基础镂空图形 */
+export type BasicShape = {
+  id: string
+  kind: ShapeKind
+  /** 中心相对盒体中心的偏移 */
+  xMm: number
+  yMm: number
+  /** 主尺寸:圆/六边形/八边形为直径,三角形为边长,矩形/椭圆/长圆槽/菱形为长 */
+  sizeXMm: number
+  /** 次尺寸:矩形/椭圆/长圆槽/菱形为宽(其余忽略) */
+  sizeYMm: number
+  /** rect 圆角(其余忽略) */
+  cornerRadiusMm: number
+  /** 镂空深度,自盒口向下 */
+  depthMm: number
+}
+
+/** 一个镂空腔:轮廓 + 腔底高度 */
+export type CavitySpec = {
+  contour: Point2[]
+  floorZ: number
+}
+
 export type ModelFormat = 'stl' | '3mf' | 'obj' | 'ply' | 'gltf' | 'glb' | 'amf'
 
 export type ModelTransform = {

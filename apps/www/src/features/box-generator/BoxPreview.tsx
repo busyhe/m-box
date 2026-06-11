@@ -28,6 +28,8 @@ type BoxPreviewProps = {
   mesh: MeshData
   modelGeometry?: BufferGeometry
   showModel: boolean
+  /** 盒体含多个镂空腔时设为 true,以半透明呈现镂空深浅的透视关系 */
+  translucent?: boolean
 }
 
 type Viewer = {
@@ -62,7 +64,7 @@ const IDENTITY_QUATERNION = new Quaternion()
 /** 适配取景的距离余量;越大默认显示越小,四周留白越多 */
 const FIT_DISTANCE_MARGIN = 1.6
 
-export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) {
+export function BoxPreview({ mesh, modelGeometry, showModel, translucent = false }: BoxPreviewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const zoomLabelRef = useRef<HTMLSpanElement | null>(null)
   const viewerRef = useRef<Viewer | null>(null)
@@ -226,6 +228,8 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
     }
 
     const hasModel = Boolean(modelGeometry && showModel)
+    // 有内置模型或多镂空腔时盒体半透明,呈现镂空区域的透视与深浅关系
+    const seeThrough = hasModel || translucent
     const { content } = viewer
 
     const boxMaterial = new MeshStandardMaterial({
@@ -233,9 +237,8 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
       metalness: 0.05,
       roughness: 0.62,
       transparent: true,
-      // 有内置模型时盒体半透明，便于观察模型摆放
-      opacity: hasModel ? 0.42 : 0.97,
-      depthWrite: !hasModel,
+      opacity: seeThrough ? (hasModel ? 0.42 : 0.5) : 0.97,
+      depthWrite: !seeThrough,
     })
     const boxMesh = new Mesh(boxGeometry, boxMaterial)
     boxMesh.renderOrder = 2
@@ -244,7 +247,8 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
     const edgeMaterial = new LineBasicMaterial({
       color: '#50606a',
       transparent: true,
-      opacity: hasModel ? 0.4 : 0.55,
+      // 半透明模式下加强轮廓线,突出各镂空腔的边界与前后层次
+      opacity: seeThrough ? 0.7 : 0.55,
     })
     const edges = new LineSegments(new EdgesGeometry(boxGeometry, 24), edgeMaterial)
     content.add(edges)
@@ -283,7 +287,7 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
         }
       }
     }
-  }, [boxGeometry, modelGeometry, showModel])
+  }, [boxGeometry, modelGeometry, showModel, translucent])
 
   return (
     <div className="relative h-full w-full">

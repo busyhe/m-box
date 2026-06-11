@@ -1,11 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Box,
+  Circle,
+  Diamond,
   Download,
   Eye,
   EyeOff,
   Github,
+  Hexagon,
+  Octagon,
+  RectangleHorizontal,
   RefreshCw,
+  Square,
+  Trash2,
+  Triangle,
   Upload,
 } from 'lucide-react'
 import { ModeSwitcher } from '@/components/header/mode-switcher'
@@ -14,14 +22,19 @@ import { Button } from '@workspace/ui/components/button'
 import {
   DEFAULT_BOX_PARAMS,
   PARAM_LIMITS,
+  type BasicShape,
   type BoxParams,
+  type CavitySpec,
   type ParsedModel,
+  type ShapeKind,
 } from './types'
 import {
   applyTransformToPositions,
   autoFitParamsForSize,
+  cavitiesOverlapAny,
   clampBoxParams,
   createFootprint,
+  createShapeCavities,
   generateStorageBox,
   positionsToPreviewGeometry,
 } from './geometry'
@@ -75,6 +88,122 @@ function loadStoredParams(): BoxParams | undefined {
   }
 }
 
+const SHAPES_STORAGE_KEY = 'm-box:shapes:v1'
+
+const SHAPE_KINDS: ShapeKind[] = [
+  'circle',
+  'rect',
+  'hexagon',
+  'ellipse',
+  'slot',
+  'triangle',
+  'octagon',
+  'diamond',
+]
+
+const SHAPE_LABELS: Record<ShapeKind, string> = {
+  circle: '圆形',
+  rect: '矩形',
+  hexagon: '六边形',
+  ellipse: '椭圆',
+  slot: '长圆槽',
+  triangle: '三角形',
+  octagon: '八边形',
+  diamond: '菱形',
+}
+
+/** 每种图形的尺寸控件配置 */
+const SHAPE_DIMENSIONS: Record<ShapeKind, { xLabel: string, yLabel?: string, corner?: boolean }> = {
+  circle: { xLabel: '直径' },
+  rect: { xLabel: '长', yLabel: '宽', corner: true },
+  hexagon: { xLabel: '直径' },
+  ellipse: { xLabel: '长径', yLabel: '短径' },
+  slot: { xLabel: '长', yLabel: '宽' },
+  triangle: { xLabel: '边长' },
+  octagon: { xLabel: '直径' },
+  diamond: { xLabel: '长', yLabel: '宽' },
+}
+
+const SHAPE_DEFAULT_SIZES: Record<ShapeKind, { x: number, y: number }> = {
+  circle: { x: 20, y: 20 },
+  rect: { x: 30, y: 20 },
+  hexagon: { x: 24, y: 24 },
+  ellipse: { x: 30, y: 18 },
+  slot: { x: 40, y: 12 },
+  triangle: { x: 26, y: 26 },
+  octagon: { x: 24, y: 24 },
+  diamond: { x: 30, y: 18 },
+}
+
+function shapeIcon(kind: ShapeKind) {
+  switch (kind) {
+    case 'circle':
+      return <Circle className="size-3.5" />
+    case 'rect':
+      return <Square className="size-3.5" />
+    case 'hexagon':
+      return <Hexagon className="size-3.5" />
+    case 'ellipse':
+      return <Circle className="size-3.5 scale-y-75" />
+    case 'slot':
+      return <RectangleHorizontal className="size-3.5" />
+    case 'triangle':
+      return <Triangle className="size-3.5" />
+    case 'octagon':
+      return <Octagon className="size-3.5" />
+    case 'diamond':
+      return <Diamond className="size-3.5" />
+  }
+}
+
+function createShapeId() {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `shape-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 从本地缓存读取基础图形列表;逐项校验,损坏时返回 undefined */
+function loadStoredShapes(): BasicShape[] | undefined {
+  if (typeof window === 'undefined') {
+    return undefined
+  }
+  try {
+    const raw = window.localStorage.getItem(SHAPES_STORAGE_KEY)
+    if (!raw) {
+      return undefined
+    }
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) {
+      return undefined
+    }
+    const toNumber = (value: unknown, fallback: number) =>
+      typeof value === 'number' && Number.isFinite(value) ? value : fallback
+    const shapes: BasicShape[] = []
+    parsed.forEach((item) => {
+      if (typeof item !== 'object' || item === null) {
+        return
+      }
+      const record = item as Record<string, unknown>
+      if (!SHAPE_KINDS.includes(record.kind as ShapeKind)) {
+        return
+      }
+      shapes.push({
+        id: typeof record.id === 'string' ? record.id : createShapeId(),
+        kind: record.kind as ShapeKind,
+        xMm: toNumber(record.xMm, 0),
+        yMm: toNumber(record.yMm, 0),
+        sizeXMm: toNumber(record.sizeXMm, 20),
+        sizeYMm: toNumber(record.sizeYMm, 20),
+        cornerRadiusMm: toNumber(record.cornerRadiusMm, 2),
+        depthMm: toNumber(record.depthMm, 20),
+      })
+    })
+    return shapes
+  } catch {
+    return undefined
+  }
+}
+
 type NumberControlProps = {
   label: string
   value: number
@@ -95,6 +224,7 @@ export function BoxGenerator() {
   const [isParsing, setIsParsing] = useState(false)
   const [confirmResetOpen, setConfirmResetOpen] = useState(false)
   const [showModel, setShowModel] = useState(true)
+  const [shapes, setShapes] = useState<BasicShape[]>([])
   const storageReadyRef = useRef(false)
 
   // 挂载后读取本地缓存(避免 SSR 水合不一致)
@@ -103,8 +233,24 @@ export function BoxGenerator() {
     if (stored) {
       setParams(stored)
     }
+    const storedShapes = loadStoredShapes()
+    if (storedShapes && storedShapes.length > 0) {
+      setShapes(storedShapes)
+    }
     storageReadyRef.current = true
   }, [])
+
+  // 基础图形变化时写入本地缓存
+  useEffect(() => {
+    if (!storageReadyRef.current || typeof window === 'undefined') {
+      return
+    }
+    try {
+      window.localStorage.setItem(SHAPES_STORAGE_KEY, JSON.stringify(shapes))
+    } catch {
+      // 写入失败忽略
+    }
+  }, [shapes])
 
   // 参数变化时写入本地缓存
   useEffect(() => {
@@ -134,9 +280,20 @@ export function BoxGenerator() {
     [params, transformedPositions],
   )
 
+  const shapeResult = useMemo(() => createShapeCavities(shapes, params), [shapes, params])
+
+  const cavities = useMemo(() => {
+    const list: CavitySpec[] = []
+    if (model && footprint.contour.length >= 3) {
+      list.push({ contour: footprint.contour, floorZ: cavityFloorZ })
+    }
+    list.push(...shapeResult.cavities)
+    return list
+  }, [model, footprint.contour, cavityFloorZ, shapeResult.cavities])
+
   const mesh = useMemo(
-    () => generateStorageBox(params, footprint.contour),
-    [params, footprint.contour],
+    () => generateStorageBox(params, cavities.length > 0 ? cavities : undefined),
+    [params, cavities],
   )
 
   const previewGeometry = useMemo(
@@ -144,7 +301,10 @@ export function BoxGenerator() {
     [transformedPositions],
   )
 
-  const warnings = [...footprint.warnings]
+  const warnings = [...footprint.warnings, ...shapeResult.warnings]
+  if (cavities.length > 1 && cavitiesOverlapAny(cavities)) {
+    warnings.push('镂空区域存在重叠，请调整图形位置或尺寸。')
+  }
   if (uploadError) {
     warnings.push(uploadError)
   }
@@ -230,11 +390,40 @@ export function BoxGenerator() {
     setShowModel(true)
   }
 
+  const addShape = (kind: ShapeKind) => {
+    const maxDepth = Math.max(2, params.heightMm - params.bottomMm)
+    const defaults = SHAPE_DEFAULT_SIZES[kind]
+    setShapes((current) => [
+      ...current,
+      {
+        id: createShapeId(),
+        kind,
+        xMm: 0,
+        yMm: 0,
+        sizeXMm: defaults.x,
+        sizeYMm: defaults.y,
+        cornerRadiusMm: 2,
+        depthMm: Math.min(params.cavityDepthMm, maxDepth),
+      },
+    ])
+  }
+
+  const updateShape = (id: string, patch: Partial<BasicShape>) => {
+    setShapes((current) =>
+      current.map((shape) => (shape.id === id ? { ...shape, ...patch } : shape)),
+    )
+  }
+
+  const removeShape = (id: string) => {
+    setShapes((current) => current.filter((shape) => shape.id !== id))
+  }
+
   const resetAll = () => {
     setParams(DEFAULT_BOX_PARAMS)
     setModel(undefined)
     setUploadError(undefined)
     setShowModel(true)
+    setShapes([])
     setConfirmResetOpen(false)
   }
 
@@ -282,7 +471,12 @@ export function BoxGenerator() {
         <div className="flex flex-1 flex-col lg:min-h-0 lg:flex-row">
           <section className="relative order-1 h-[52svh] min-h-[360px] flex-1 overflow-hidden bg-secondary/60 lg:h-auto lg:min-h-[calc(100svh-3.5rem)]">
             <div className="absolute inset-0">
-              <BoxPreview mesh={mesh} modelGeometry={previewGeometry} showModel={showModel} />
+              <BoxPreview
+                mesh={mesh}
+                modelGeometry={previewGeometry}
+                showModel={showModel}
+                translucent={shapes.length > 0}
+              />
             </div>
             {warnings.length > 0 ? (
               <div className="pointer-events-none absolute inset-x-4 bottom-4 z-10 rounded-md border border-amber-300 bg-amber-50/95 px-4 py-3 text-sm text-amber-950 shadow-sm backdrop-blur dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-100">
@@ -407,6 +601,108 @@ export function BoxGenerator() {
               ) : null}
 
               <section className="rounded-lg bg-secondary/60 p-4">
+                <h2 className="mb-3 text-sm font-semibold">基础图形</h2>
+                <div className="grid grid-cols-3 gap-2">
+                  {SHAPE_KINDS.map((kind) => (
+                    <Button
+                      key={kind}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5 bg-background"
+                      onClick={() => addShape(kind)}
+                    >
+                      {shapeIcon(kind)}
+                      {SHAPE_LABELS[kind]}
+                    </Button>
+                  ))}
+                </div>
+                {shapes.length === 0 ? (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    无需上传模型，点击上方按钮添加常用镂空图形，可添加多个并分别调整尺寸、深度和位置。
+                  </p>
+                ) : null}
+                {shapes.map((shape, index) => {
+                  const dimensions = SHAPE_DIMENSIONS[shape.kind]
+                  return (
+                    <div key={shape.id} className="mt-3 rounded-md border bg-background/60 p-3">
+                      <div className="mb-3 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5 text-sm font-medium">
+                          {shapeIcon(shape.kind)}
+                          {SHAPE_LABELS[shape.kind]} {index + 1}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => removeShape(shape.id)}
+                          title="删除图形"
+                        >
+                          <Trash2 className="size-4" />
+                          <span className="sr-only">删除图形</span>
+                        </Button>
+                      </div>
+                      <div className="space-y-3">
+                        <NumberControl
+                          label={dimensions.xLabel}
+                          value={shape.sizeXMm}
+                          min={4}
+                          max={340}
+                          step={0.5}
+                          onChange={(value) => updateShape(shape.id, { sizeXMm: value })}
+                        />
+                        {dimensions.yLabel ? (
+                          <NumberControl
+                            label={dimensions.yLabel}
+                            value={shape.sizeYMm}
+                            min={4}
+                            max={340}
+                            step={0.5}
+                            onChange={(value) => updateShape(shape.id, { sizeYMm: value })}
+                          />
+                        ) : null}
+                        {dimensions.corner ? (
+                          <NumberControl
+                            label="圆角"
+                            value={shape.cornerRadiusMm}
+                            min={0}
+                            max={Math.min(shape.sizeXMm, shape.sizeYMm) / 2}
+                            step={0.5}
+                            onChange={(value) => updateShape(shape.id, { cornerRadiusMm: value })}
+                          />
+                        ) : null}
+                        <NumberControl
+                          label="深度"
+                          value={shape.depthMm}
+                          min={2}
+                          max={Math.max(2, Math.round((params.heightMm - params.bottomMm) * 10) / 10)}
+                          step={0.5}
+                          onChange={(value) => updateShape(shape.id, { depthMm: value })}
+                        />
+                        <NumberControl
+                          label="X 位置"
+                          value={shape.xMm}
+                          min={Math.round(-params.lengthMm / 2)}
+                          max={Math.round(params.lengthMm / 2)}
+                          step={0.5}
+                          onChange={(value) => updateShape(shape.id, { xMm: value })}
+                        />
+                        <NumberControl
+                          label="Y 位置"
+                          value={shape.yMm}
+                          min={Math.round(-params.widthMm / 2)}
+                          max={Math.round(params.widthMm / 2)}
+                          step={0.5}
+                          onChange={(value) => updateShape(shape.id, { yMm: value })}
+                        />
+                      </div>
+                    </div>
+                  )
+                })}
+              </section>
+
+              <section className="rounded-lg bg-secondary/60 p-4">
                 <h2 className="mb-3 text-sm font-semibold">盒体尺寸</h2>
                 <div className="space-y-4">
                   <NumberControl
@@ -515,6 +811,7 @@ export function BoxGenerator() {
                   />
                 </div>
               </section>
+
             </div>
           </aside>
         </div>

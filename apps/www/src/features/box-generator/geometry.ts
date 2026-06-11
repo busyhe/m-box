@@ -8,7 +8,9 @@ import {
 import {
   DEFAULT_BOX_PARAMS,
   PARAM_LIMITS,
+  type BasicShape,
   type BoxParams,
+  type CavitySpec,
   type ContourMode,
   type FootprintResult,
   type MeshData,
@@ -221,7 +223,197 @@ function finalizeFootprint(
   }
 }
 
-export function generateStorageBox(paramsInput: BoxParams, footprint?: Point2[]): MeshData {
+/** 基础图形 → 以图形中心为原点的轮廓多边形 */
+export function shapeContour(shape: BasicShape): Point2[] {
+  switch (shape.kind) {
+    case 'circle': {
+      const radius = Math.max(1, shape.sizeXMm / 2)
+      const segments = 48
+      const points: Point2[] = []
+      for (let index = 0; index < segments; index += 1) {
+        const angle = (index / segments) * Math.PI * 2
+        points.push({
+          x: shape.xMm + Math.cos(angle) * radius,
+          y: shape.yMm + Math.sin(angle) * radius,
+        })
+      }
+      return points
+    }
+    case 'hexagon': {
+      const radius = Math.max(1, shape.sizeXMm / 2)
+      const points: Point2[] = []
+      for (let index = 0; index < 6; index += 1) {
+        const angle = (index / 6) * Math.PI * 2 + Math.PI / 6
+        points.push({
+          x: shape.xMm + Math.cos(angle) * radius,
+          y: shape.yMm + Math.sin(angle) * radius,
+        })
+      }
+      return points
+    }
+    case 'octagon': {
+      const radius = Math.max(1, shape.sizeXMm / 2)
+      const points: Point2[] = []
+      for (let index = 0; index < 8; index += 1) {
+        const angle = (index / 8) * Math.PI * 2 + Math.PI / 8
+        points.push({
+          x: shape.xMm + Math.cos(angle) * radius,
+          y: shape.yMm + Math.sin(angle) * radius,
+        })
+      }
+      return points
+    }
+    case 'triangle': {
+      // 等边三角形,sizeXMm 为边长,外接圆半径 = 边长 / √3
+      const radius = Math.max(1, shape.sizeXMm / Math.sqrt(3))
+      const points: Point2[] = []
+      for (let index = 0; index < 3; index += 1) {
+        const angle = Math.PI / 2 + (index / 3) * Math.PI * 2
+        points.push({
+          x: shape.xMm + Math.cos(angle) * radius,
+          y: shape.yMm + Math.sin(angle) * radius,
+        })
+      }
+      return points
+    }
+    case 'ellipse': {
+      const radiusX = Math.max(1, shape.sizeXMm / 2)
+      const radiusY = Math.max(1, shape.sizeYMm / 2)
+      const segments = 48
+      const points: Point2[] = []
+      for (let index = 0; index < segments; index += 1) {
+        const angle = (index / segments) * Math.PI * 2
+        points.push({
+          x: shape.xMm + Math.cos(angle) * radiusX,
+          y: shape.yMm + Math.sin(angle) * radiusY,
+        })
+      }
+      return points
+    }
+    case 'slot': {
+      // 长圆槽(跑道形):两端半圆 + 中间直段
+      const radius = Math.max(1, shape.sizeYMm / 2)
+      const half = Math.max(0, shape.sizeXMm / 2 - radius)
+      const segments = 16
+      const points: Point2[] = []
+      for (let index = 0; index <= segments; index += 1) {
+        const angle = -Math.PI / 2 + (index / segments) * Math.PI
+        points.push({
+          x: shape.xMm + half + Math.cos(angle) * radius,
+          y: shape.yMm + Math.sin(angle) * radius,
+        })
+      }
+      for (let index = 0; index <= segments; index += 1) {
+        const angle = Math.PI / 2 + (index / segments) * Math.PI
+        points.push({
+          x: shape.xMm - half + Math.cos(angle) * radius,
+          y: shape.yMm + Math.sin(angle) * radius,
+        })
+      }
+      return points
+    }
+    case 'diamond': {
+      const halfX = Math.max(1, shape.sizeXMm / 2)
+      const halfY = Math.max(1, shape.sizeYMm / 2)
+      return [
+        { x: shape.xMm + halfX, y: shape.yMm },
+        { x: shape.xMm, y: shape.yMm + halfY },
+        { x: shape.xMm - halfX, y: shape.yMm },
+        { x: shape.xMm, y: shape.yMm - halfY },
+      ]
+    }
+    case 'rect': {
+      return roundedRectContour(
+        Math.max(2, shape.sizeXMm),
+        Math.max(2, shape.sizeYMm),
+        Math.max(0, shape.cornerRadiusMm),
+        6,
+      ).map((point) => ({ x: point.x + shape.xMm, y: point.y + shape.yMm }))
+    }
+  }
+}
+
+/** 将基础图形转换为镂空腔,并裁剪到盒体内壁以内 */
+export function createShapeCavities(
+  shapes: BasicShape[],
+  params: BoxParams,
+): { cavities: CavitySpec[]; warnings: string[] } {
+  const warnings: string[] = []
+  const safeHalfLength = params.lengthMm / 2 - params.wallMm
+  const safeHalfWidth = params.widthMm / 2 - params.wallMm
+  let clipped = false
+
+  const cavities: CavitySpec[] = []
+  shapes.forEach((shape) => {
+    const constrained = shapeContour(shape).map((point) => {
+      const x = clamp(point.x, -safeHalfLength, safeHalfLength)
+      const y = clamp(point.y, -safeHalfWidth, safeHalfWidth)
+      if (Math.abs(x - point.x) > EPSILON || Math.abs(y - point.y) > EPSILON) {
+        clipped = true
+      }
+      return { x, y }
+    })
+    const cleaned = cleanPolygon(constrained)
+    if (cleaned.length < 3) {
+      return
+    }
+    cavities.push({
+      contour: ensureCounterClockwise(cleaned),
+      floorZ: clamp(params.heightMm - shape.depthMm, params.bottomMm, params.heightMm - 2),
+    })
+  })
+
+  if (clipped) {
+    warnings.push('部分图形超出盒体内壁，已被裁剪。')
+  }
+
+  return { cavities, warnings }
+}
+
+/** 任意两个镂空腔轮廓是否重叠(边相交或互相包含) */
+export function cavitiesOverlapAny(cavities: CavitySpec[]): boolean {
+  for (let a = 0; a < cavities.length; a += 1) {
+    for (let b = a + 1; b < cavities.length; b += 1) {
+      if (polygonsOverlap(cavities[a].contour, cavities[b].contour)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function polygonsOverlap(a: Point2[], b: Point2[]): boolean {
+  for (let i = 0; i < a.length; i += 1) {
+    const iNext = (i + 1) % a.length
+    for (let j = 0; j < b.length; j += 1) {
+      const jNext = (j + 1) % b.length
+      if (segmentsIntersect(a[i], a[iNext], b[j], b[jNext])) {
+        return true
+      }
+    }
+  }
+  return pointInPolygon(a[0], b) || pointInPolygon(b[0], a)
+}
+
+function pointInPolygon(point: Point2, polygon: Point2[]): boolean {
+  let inside = false
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const pi = polygon[i]
+    const pj = polygon[j]
+    if (
+      pi.y > point.y !== pj.y > point.y &&
+      point.x < ((pj.x - pi.x) * (point.y - pi.y)) / (pj.y - pi.y) + pi.x
+    ) {
+      inside = !inside
+    }
+  }
+  return inside
+}
+
+export function generateStorageBox(
+  paramsInput: BoxParams,
+  cavitiesInput?: CavitySpec[],
+): MeshData {
   const params = clampBoxParams(paramsInput)
   const outer = ensureCounterClockwise(
     roundedRectContour(
@@ -231,18 +423,36 @@ export function generateStorageBox(paramsInput: BoxParams, footprint?: Point2[])
       Math.max(6, Math.round(params.contourSmoothing / 6)),
     ),
   )
-  const inner = ensureCounterClockwise(
-    cleanPolygon(
-      footprint && footprint.length >= 3
-        ? footprint
-        : roundedRectContour(
-            params.lengthMm - params.wallMm * 2,
-            params.widthMm - params.wallMm * 2,
-            Math.max(0, params.cornerRadiusMm - params.wallMm),
-            8,
-          ),
-    ),
+
+  // 默认腔底 z = 高度 - 镂空深度,最低不低于底厚
+  const defaultFloorZ = clamp(
+    params.heightMm - params.cavityDepthMm,
+    params.bottomMm,
+    params.heightMm - 2,
   )
+
+  // 未指定镂空腔时,使用整腔矩形镂空(原有行为)
+  const sourceSpecs: CavitySpec[] =
+    cavitiesInput && cavitiesInput.length > 0
+      ? cavitiesInput
+      : [
+          {
+            contour: roundedRectContour(
+              params.lengthMm - params.wallMm * 2,
+              params.widthMm - params.wallMm * 2,
+              Math.max(0, params.cornerRadiusMm - params.wallMm),
+              8,
+            ),
+            floorZ: defaultFloorZ,
+          },
+        ]
+
+  const specs = sourceSpecs
+    .map((spec) => ({
+      contour: ensureCounterClockwise(cleanPolygon(spec.contour)),
+      floorZ: clamp(spec.floorZ, params.bottomMm, params.heightMm - 2),
+    }))
+    .filter((spec) => spec.contour.length >= 3)
 
   const vertices: Point3[] = []
   const triangles: Triangle[] = []
@@ -260,32 +470,38 @@ export function generateStorageBox(paramsInput: BoxParams, footprint?: Point2[])
     addTriangle(a, c, d)
   }
 
-  // 腔底 z = 高度 - 镂空深度,最低不低于底厚
-  const cavityFloorZ = clamp(
-    params.heightMm - params.cavityDepthMm,
-    params.bottomMm,
-    params.heightMm - 2,
-  )
-
   const outerBottom = outer.map((point) => addVertex(point, 0))
   const outerTop = outer.map((point) => addVertex(point, params.heightMm))
-  const innerFloor = inner.map((point) => addVertex(point, cavityFloorZ))
-  const innerTop = inner.map((point) => addVertex(point, params.heightMm))
+  const cavityTops = specs.map((spec) =>
+    spec.contour.map((point) => addVertex(point, params.heightMm)),
+  )
 
+  // 底面
   addPolygonFace(outer, outerBottom, triangles, true)
-  addPolygonFace(inner, innerFloor, triangles, false)
-  addTopAnnulus(outer, inner, outerTop, innerTop, triangles)
 
+  // 顶面:外轮廓 + 所有镂空腔作为孔洞
+  addTopFaceWithHoles(outer, outerTop, specs, cavityTops, triangles)
+
+  // 外壁
   for (let index = 0; index < outer.length; index += 1) {
     const next = (index + 1) % outer.length
     addQuad(outerBottom[index], outerBottom[next], outerTop[next], outerTop[index])
   }
 
-  for (let index = 0; index < inner.length; index += 1) {
-    const next = (index + 1) % inner.length
-    addQuad(innerFloor[index], innerTop[next], innerFloor[next], innerFloor[index])
-    addTriangle(innerFloor[index], innerTop[index], innerTop[next])
-  }
+  // 每个镂空腔:腔底 + 内壁
+  specs.forEach((spec, specIndex) => {
+    const contour = spec.contour
+    const floorIndices = contour.map((point) => addVertex(point, spec.floorZ))
+    const topIndices = cavityTops[specIndex]
+
+    addPolygonFace(contour, floorIndices, triangles, false)
+
+    for (let index = 0; index < contour.length; index += 1) {
+      const next = (index + 1) % contour.length
+      addTriangle(floorIndices[index], topIndices[next], floorIndices[next])
+      addTriangle(floorIndices[index], topIndices[index], topIndices[next])
+    }
+  })
 
   return { vertices, triangles }
 }
@@ -331,16 +547,17 @@ export function getMeshSize(mesh: MeshData): Size3 {
   return measurePositions(positions)
 }
 
-function addTopAnnulus(
+function addTopFaceWithHoles(
   outer: Point2[],
-  inner: Point2[],
   outerIndices: number[],
-  innerIndices: number[],
+  specs: CavitySpec[],
+  cavityTopIndices: number[][],
   triangles: Triangle[],
 ) {
-  const hole = [...inner].reverse()
-  const holeIndices = [...innerIndices].reverse()
-  const faces = ShapeUtils.triangulateShape(toVector2List(outer), [toVector2List(hole)])
+  // 孔洞需要与外轮廓相反的方向(顺时针)
+  const holes = specs.map((spec) => toVector2List([...spec.contour].reverse()))
+  const holeIndices = cavityTopIndices.flatMap((indices) => [...indices].reverse())
+  const faces = ShapeUtils.triangulateShape(toVector2List(outer), holes)
   const combined = [...outerIndices, ...holeIndices]
   faces.forEach((face) => {
     triangles.push([combined[face[0]], combined[face[1]], combined[face[2]]])
