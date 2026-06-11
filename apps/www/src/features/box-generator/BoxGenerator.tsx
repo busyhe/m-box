@@ -621,11 +621,6 @@ export function BoxGenerator() {
                     </Button>
                   ))}
                 </div>
-                {shapes.length === 0 ? (
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    无需上传模型，点击上方按钮添加常用镂空图形，可添加多个并分别调整尺寸、深度和位置。
-                  </p>
-                ) : null}
                 {shapes.map((shape, index) => {
                   const dimensions = SHAPE_DIMENSIONS[shape.kind]
                   return (
@@ -778,11 +773,7 @@ export function BoxGenerator() {
                       矩形内腔
                     </Button>
                   </div>
-                  {!model ? (
-                    <p className="text-xs text-muted-foreground">
-                      上传模型后，内腔可按模型俯视轮廓镂空。
-                    </p>
-                  ) : null}
+                  
                   <NumberControl
                     label="镂空深度"
                     value={params.cavityDepthMm}
