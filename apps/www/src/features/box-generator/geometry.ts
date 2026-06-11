@@ -7,25 +7,40 @@ import {
 } from 'three'
 import {
   DEFAULT_BOX_PARAMS,
+  PARAM_LIMITS,
   type BoxParams,
+  type ContourMode,
   type FootprintResult,
   type MeshData,
   type ModelTransform,
   type Point2,
   type Point3,
   type Size3,
-  type SquareCutoutParams,
   type Triangle,
 } from './types'
 
 const EPSILON = 1e-6
 
 export function clampBoxParams(params: BoxParams): BoxParams {
-  const wallMm = clamp(params.wallMm, 0.8, 12)
-  const bottomMm = clamp(params.bottomMm, 0.8, 12)
-  const lengthMm = Math.max(params.lengthMm, wallMm * 2 + 12)
-  const widthMm = Math.max(params.widthMm, wallMm * 2 + 12)
-  const heightMm = Math.max(params.heightMm, bottomMm + 8)
+  const limits = PARAM_LIMITS
+  const wallMm = clamp(params.wallMm, limits.wallMm.min, limits.wallMm.max)
+  const bottomMm = clamp(params.bottomMm, limits.bottomMm.min, limits.bottomMm.max)
+  // 内腔至少保留 12mm,避免生成无效盒体
+  const lengthMm = clamp(
+    params.lengthMm,
+    Math.max(limits.lengthMm.min, wallMm * 2 + 12),
+    limits.lengthMm.max,
+  )
+  const widthMm = clamp(
+    params.widthMm,
+    Math.max(limits.widthMm.min, wallMm * 2 + 12),
+    limits.widthMm.max,
+  )
+  const heightMm = clamp(
+    params.heightMm,
+    Math.max(limits.heightMm.min, bottomMm + 8),
+    limits.heightMm.max,
+  )
 
   return {
     ...params,
@@ -34,10 +49,18 @@ export function clampBoxParams(params: BoxParams): BoxParams {
     heightMm,
     wallMm,
     bottomMm,
-    cornerRadiusMm: clamp(params.cornerRadiusMm, 0, Math.min(lengthMm, widthMm) / 4),
-    clearanceXYMm: clamp(params.clearanceXYMm, 0.2, 15),
-    clearanceZMm: clamp(params.clearanceZMm, 0.2, 30),
-    contourSmoothing: Math.round(clamp(params.contourSmoothing, 8, 96)),
+    cornerRadiusMm: clamp(
+      params.cornerRadiusMm,
+      limits.cornerRadiusMm.min,
+      Math.min(limits.cornerRadiusMm.max, Math.min(lengthMm, widthMm) / 4),
+    ),
+    clearanceXYMm: clamp(params.clearanceXYMm, limits.clearanceXYMm.min, limits.clearanceXYMm.max),
+    clearanceZMm: clamp(params.clearanceZMm, limits.clearanceZMm.min, limits.clearanceZMm.max),
+    contourSmoothing: Math.round(
+      clamp(params.contourSmoothing, limits.contourSmoothing.min, limits.contourSmoothing.max),
+    ),
+    // 深度上限为通腔到底(高 - 底厚)
+    cavityDepthMm: clamp(params.cavityDepthMm, limits.cavityDepthMm.min, heightMm - bottomMm),
   }
 }
 
@@ -47,6 +70,8 @@ export function autoFitParamsForSize(params: BoxParams, size: Size3): BoxParams 
     lengthMm: roundMm(size.x + params.wallMm * 2 + params.clearanceXYMm * 2),
     widthMm: roundMm(size.y + params.wallMm * 2 + params.clearanceXYMm * 2),
     heightMm: roundMm(size.z + params.bottomMm + params.clearanceZMm),
+    // 自动适配时镂空到底,容纳完整模型
+    cavityDepthMm: roundMm(size.z + params.clearanceZMm),
   }
 
   return clampBoxParams(next)
@@ -55,6 +80,7 @@ export function autoFitParamsForSize(params: BoxParams, size: Size3): BoxParams 
 export function applyTransformToPositions(
   positions: Float32Array,
   transform: ModelTransform,
+  bottomMm: number = DEFAULT_BOX_PARAMS.bottomMm,
 ): Float32Array {
   const next = new Float32Array(positions.length)
   const rx = toRadians(transform.rotateX)
@@ -92,7 +118,7 @@ export function applyTransformToPositions(
     next[index + 2] = z
   }
 
-  return centerPositions(next)
+  return centerPositions(next, bottomMm)
 }
 
 export function measurePositions(positions: Float32Array): Size3 {
@@ -109,7 +135,8 @@ export function createFootprint(
   positions: Float32Array | undefined,
   params: BoxParams,
 ): FootprintResult {
-  if (!positions || positions.length < 9) {
+  // 无模型或选择矩形内腔时,使用矩形(圆角)镂空
+  if (!positions || positions.length < 9 || params.cavityMode === 'rect') {
     const innerLength = Math.max(12, params.lengthMm - params.wallMm * 2)
     const innerWidth = Math.max(12, params.widthMm - params.wallMm * 2)
     return {
@@ -136,89 +163,65 @@ export function createFootprint(
     inflatedConcave.length >= 3 &&
     !hasSelfIntersections(inflatedConcave)
   ) {
+    return finalizeFootprint(inflatedConcave, 'concave', params, warnings)
+  }
+
+  warnings.push('轮廓无法稳定闭合，已使用保守凸包轮廓。')
+  return finalizeFootprint(
+    cleanPolygon(offsetPolygonRadial(convexHull(sampled), params.clearanceXYMm)),
+    'convexFallback',
+    params,
+    warnings,
+  )
+}
+
+/** 将镂空轮廓限制在盒体内壁以内,避免轮廓穿透壁面导致网格破损 */
+function finalizeFootprint(
+  contour: Point2[],
+  mode: ContourMode,
+  params: BoxParams,
+  warnings: string[],
+): FootprintResult {
+  const safeHalfLength = params.lengthMm / 2 - params.wallMm
+  const safeHalfWidth = params.widthMm / 2 - params.wallMm
+  let clipped = false
+
+  const constrained = contour.map((point) => {
+    const x = clamp(point.x, -safeHalfLength, safeHalfLength)
+    const y = clamp(point.y, -safeHalfWidth, safeHalfWidth)
+    if (Math.abs(x - point.x) > EPSILON || Math.abs(y - point.y) > EPSILON) {
+      clipped = true
+    }
+    return { x, y }
+  })
+
+  if (clipped) {
+    warnings.push('模型轮廓加余量超出盒体内壁，镂空区域已被裁剪，建议增大盒体尺寸。')
+  }
+
+  const cleaned = cleanPolygon(constrained)
+  if (cleaned.length < 3 || hasSelfIntersections(cleaned)) {
+    warnings.push('轮廓裁剪后不可用，已退回矩形内腔。')
     return {
-      contour: ensureCounterClockwise(inflatedConcave),
-      mode: 'concave',
+      contour: roundedRectContour(
+        Math.max(12, params.lengthMm - params.wallMm * 2),
+        Math.max(12, params.widthMm - params.wallMm * 2),
+        Math.max(0, params.cornerRadiusMm - params.wallMm),
+        8,
+      ),
+      mode: 'convexFallback',
       warnings,
     }
   }
 
-  warnings.push('轮廓无法稳定闭合，已使用保守凸包轮廓。')
   return {
-    contour: ensureCounterClockwise(
-      cleanPolygon(offsetPolygonRadial(convexHull(sampled), params.clearanceXYMm)),
-    ),
-    mode: 'convexFallback',
+    contour: ensureCounterClockwise(cleaned),
+    mode,
     warnings,
   }
 }
 
-export function createSquareCutoutContours(
-  paramsInput: BoxParams,
-  cutoutsInput: SquareCutoutParams,
-) {
-  const params = clampBoxParams(paramsInput)
-  const cutouts = clampSquareCutoutParams(cutoutsInput)
-  const innerLength = Math.max(12, params.lengthMm - params.wallMm * 2)
-  const innerWidth = Math.max(12, params.widthMm - params.wallMm * 2)
-  const minPocketSize = 6
-  const maxGapByLength =
-    cutouts.columns > 1
-      ? Math.max(0, (innerLength - cutouts.columns * minPocketSize) / (cutouts.columns - 1))
-      : cutouts.gapMm
-  const maxGapByWidth =
-    cutouts.rows > 1
-      ? Math.max(0, (innerWidth - cutouts.rows * minPocketSize) / (cutouts.rows - 1))
-      : cutouts.gapMm
-  const safeGap = Math.min(cutouts.gapMm, maxGapByLength, maxGapByWidth)
-  const maxSizeByLength = (innerLength - (cutouts.columns - 1) * safeGap) / cutouts.columns
-  const maxSizeByWidth = (innerWidth - (cutouts.rows - 1) * safeGap) / cutouts.rows
-  const safeSize = Math.max(minPocketSize, Math.min(cutouts.sizeMm, maxSizeByLength, maxSizeByWidth))
-  const totalLength = cutouts.columns * safeSize + (cutouts.columns - 1) * safeGap
-  const totalWidth = cutouts.rows * safeSize + (cutouts.rows - 1) * safeGap
-  const startX = -totalLength / 2 + safeSize / 2
-  const startY = -totalWidth / 2 + safeSize / 2
-  const radius = Math.min(cutouts.cornerRadiusMm, safeSize / 4)
-  const contours: Point2[][] = []
-
-  for (let row = 0; row < cutouts.rows; row += 1) {
-    for (let column = 0; column < cutouts.columns; column += 1) {
-      const centerX = startX + column * (safeSize + safeGap)
-      const centerY = startY + row * (safeSize + safeGap)
-      const contour = roundedRectContour(safeSize, safeSize, radius, radius > EPSILON ? 3 : 1)
-        .map((point) => ({ x: point.x + centerX, y: point.y + centerY }))
-      contours.push(ensureCounterClockwise(cleanPolygon(contour)))
-    }
-  }
-
-  const warnings: string[] = []
-  if (safeGap !== cutouts.gapMm || safeSize !== cutouts.sizeMm) {
-    warnings.push('方形镂空阵列已按当前盒体内腔自动收紧。')
-  }
-
-  return { contours, warnings }
-}
-
-export function clampSquareCutoutParams(params: SquareCutoutParams): SquareCutoutParams {
-  const columns = Math.round(clamp(params.columns, 1, 8))
-  const rows = Math.round(clamp(params.rows, 1, 8))
-  const sizeMm = clamp(params.sizeMm, 6, 120)
-  const gapMm = clamp(params.gapMm, 0, 40)
-
-  return {
-    enabled: params.enabled,
-    sizeMm,
-    columns,
-    rows,
-    gapMm,
-    cornerRadiusMm: clamp(params.cornerRadiusMm, 0, sizeMm / 4),
-  }
-}
-
-export function generateStorageBox(
-  paramsInput: BoxParams,
-  footprint?: Point2[] | Point2[][],
-): MeshData {
+export function generateStorageBox(paramsInput: BoxParams, footprint?: Point2[]): MeshData {
   const params = clampBoxParams(paramsInput)
   const outer = ensureCounterClockwise(
     roundedRectContour(
@@ -228,7 +231,18 @@ export function generateStorageBox(
       Math.max(6, Math.round(params.contourSmoothing / 6)),
     ),
   )
-  const inners = normalizeFootprints(footprint, params)
+  const inner = ensureCounterClockwise(
+    cleanPolygon(
+      footprint && footprint.length >= 3
+        ? footprint
+        : roundedRectContour(
+            params.lengthMm - params.wallMm * 2,
+            params.widthMm - params.wallMm * 2,
+            Math.max(0, params.cornerRadiusMm - params.wallMm),
+            8,
+          ),
+    ),
+  )
 
   const vertices: Point3[] = []
   const triangles: Triangle[] = []
@@ -246,31 +260,32 @@ export function generateStorageBox(
     addTriangle(a, c, d)
   }
 
+  // 腔底 z = 高度 - 镂空深度,最低不低于底厚
+  const cavityFloorZ = clamp(
+    params.heightMm - params.cavityDepthMm,
+    params.bottomMm,
+    params.heightMm - 2,
+  )
+
   const outerBottom = outer.map((point) => addVertex(point, 0))
   const outerTop = outer.map((point) => addVertex(point, params.heightMm))
-  const innerFloors = inners.map((inner) => inner.map((point) => addVertex(point, params.bottomMm)))
-  const innerTops = inners.map((inner) => inner.map((point) => addVertex(point, params.heightMm)))
+  const innerFloor = inner.map((point) => addVertex(point, cavityFloorZ))
+  const innerTop = inner.map((point) => addVertex(point, params.heightMm))
 
   addPolygonFace(outer, outerBottom, triangles, true)
-  inners.forEach((inner, index) => {
-    addPolygonFace(inner, innerFloors[index], triangles, false)
-  })
-  addTopAnnulus(outer, inners, outerTop, innerTops, triangles)
+  addPolygonFace(inner, innerFloor, triangles, false)
+  addTopAnnulus(outer, inner, outerTop, innerTop, triangles)
 
   for (let index = 0; index < outer.length; index += 1) {
     const next = (index + 1) % outer.length
     addQuad(outerBottom[index], outerBottom[next], outerTop[next], outerTop[index])
   }
 
-  inners.forEach((inner, holeIndex) => {
-    const innerFloor = innerFloors[holeIndex]
-    const innerTop = innerTops[holeIndex]
-    for (let index = 0; index < inner.length; index += 1) {
-      const next = (index + 1) % inner.length
-      addTriangle(innerFloor[index], innerTop[next], innerFloor[next])
-      addTriangle(innerFloor[index], innerTop[index], innerTop[next])
-    }
-  })
+  for (let index = 0; index < inner.length; index += 1) {
+    const next = (index + 1) % inner.length
+    addQuad(innerFloor[index], innerTop[next], innerFloor[next], innerFloor[index])
+    addTriangle(innerFloor[index], innerTop[index], innerTop[next])
+  }
 
   return { vertices, triangles }
 }
@@ -318,17 +333,15 @@ export function getMeshSize(mesh: MeshData): Size3 {
 
 function addTopAnnulus(
   outer: Point2[],
-  inners: Point2[][],
+  inner: Point2[],
   outerIndices: number[],
-  innerIndices: number[][],
+  innerIndices: number[],
   triangles: Triangle[],
 ) {
-  const holes = inners.map((inner) => toVector2List([...inner].reverse()))
-  const combined = [
-    ...outerIndices,
-    ...innerIndices.flatMap((indices) => [...indices].reverse()),
-  ]
-  const faces = ShapeUtils.triangulateShape(toVector2List(outer), holes)
+  const hole = [...inner].reverse()
+  const holeIndices = [...innerIndices].reverse()
+  const faces = ShapeUtils.triangulateShape(toVector2List(outer), [toVector2List(hole)])
+  const combined = [...outerIndices, ...holeIndices]
   faces.forEach((face) => {
     triangles.push([combined[face[0]], combined[face[1]], combined[face[2]]])
   })
@@ -382,30 +395,6 @@ function roundedRectContour(length: number, width: number, radius: number, segme
     }
     return points
   })
-}
-
-function normalizeFootprints(footprint: Point2[] | Point2[][] | undefined, params: BoxParams) {
-  const fallback = roundedRectContour(
-    params.lengthMm - params.wallMm * 2,
-    params.widthMm - params.wallMm * 2,
-    Math.max(0, params.cornerRadiusMm - params.wallMm),
-    8,
-  )
-  const rawContours =
-    footprint && footprint.length > 0
-      ? isPointList(footprint)
-        ? [footprint]
-        : footprint
-      : [fallback]
-  const contours = rawContours
-    .map((contour) => ensureCounterClockwise(cleanPolygon(contour)))
-    .filter((contour) => contour.length >= 3 && Math.abs(signedArea(contour)) > 1)
-
-  return contours.length > 0 ? contours : [ensureCounterClockwise(cleanPolygon(fallback))]
-}
-
-function isPointList(points: Point2[] | Point2[][]): points is Point2[] {
-  return !Array.isArray(points[0])
 }
 
 function concaveHull(points: Point2[], smoothing: number): Point2[] | undefined {
@@ -477,7 +466,7 @@ function samplePointsFromPositions(positions: Float32Array, maxPoints: number): 
   return points
 }
 
-function centerPositions(positions: Float32Array) {
+function centerPositions(positions: Float32Array, bottomMm: number) {
   const bounds = getBounds(positions)
   const offsetX = (bounds.min.x + bounds.max.x) / 2
   const offsetY = (bounds.min.y + bounds.max.y) / 2
@@ -487,7 +476,7 @@ function centerPositions(positions: Float32Array) {
   for (let index = 0; index < positions.length; index += 3) {
     next[index] = positions[index] - offsetX
     next[index + 1] = positions[index + 1] - offsetY
-    next[index + 2] = positions[index + 2] - offsetZ + DEFAULT_BOX_PARAMS.bottomMm
+    next[index + 2] = positions[index + 2] - offsetZ + bottomMm
   }
 
   return next

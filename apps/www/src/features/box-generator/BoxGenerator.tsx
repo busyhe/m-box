@@ -1,9 +1,10 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Box,
   Download,
+  Eye,
+  EyeOff,
   Github,
-  Grid3X3,
   RefreshCw,
   Upload,
 } from 'lucide-react'
@@ -12,23 +13,20 @@ import { siteConfig } from '@/config/site'
 import { Button } from '@workspace/ui/components/button'
 import {
   DEFAULT_BOX_PARAMS,
-  DEFAULT_SQUARE_CUTOUTS,
+  PARAM_LIMITS,
   type BoxParams,
   type ParsedModel,
-  type SquareCutoutParams,
 } from './types'
 import {
   applyTransformToPositions,
   autoFitParamsForSize,
   clampBoxParams,
-  clampSquareCutoutParams,
   createFootprint,
-  createSquareCutoutContours,
   generateStorageBox,
   positionsToPreviewGeometry,
 } from './geometry'
 import { build3mfFileName, create3mfBlob } from './export-3mf'
-import { parseModelFile } from './model-loader'
+import { MODEL_FILE_ACCEPT, parseModelFile, updateParsedModelTransform } from './model-loader'
 import { BoxPreview } from './BoxPreview'
 
 type NumberControlProps = {
@@ -38,7 +36,8 @@ type NumberControlProps = {
   max: number
   step: number
   unit?: string
-  disabled?: boolean
+  /** 滑杆使用对数刻度,适合缩放类参数,使放大/缩小行程对称 */
+  logarithmic?: boolean
   onChange: (value: number) => void
 }
 
@@ -48,11 +47,18 @@ export function BoxGenerator() {
   const [model, setModel] = useState<ParsedModel | undefined>()
   const [uploadError, setUploadError] = useState<string | undefined>()
   const [isParsing, setIsParsing] = useState(false)
-  const [squareCutouts, setSquareCutouts] = useState<SquareCutoutParams>(DEFAULT_SQUARE_CUTOUTS)
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false)
+  const [showModel, setShowModel] = useState(true)
+
+  // 模型预览底面贴合腔底(高度 - 镂空深度)
+  const cavityFloorZ = Math.max(params.bottomMm, params.heightMm - params.cavityDepthMm)
 
   const transformedPositions = useMemo(
-    () => (model ? applyTransformToPositions(model.rawPositions, model.transform) : undefined),
-    [model],
+    () =>
+      model
+        ? applyTransformToPositions(model.rawPositions, model.transform, cavityFloorZ)
+        : undefined,
+    [model, cavityFloorZ],
   )
 
   const footprint = useMemo(
@@ -60,21 +66,9 @@ export function BoxGenerator() {
     [params, transformedPositions],
   )
 
-  const squareCutoutResult = useMemo(
-    () => createSquareCutoutContours(params, squareCutouts),
-    [params, squareCutouts],
-  )
-
-  const cavityContours = useMemo(() => {
-    if (model) {
-      return [footprint.contour]
-    }
-    return squareCutouts.enabled ? squareCutoutResult.contours : [footprint.contour]
-  }, [footprint.contour, model, squareCutoutResult.contours, squareCutouts.enabled])
-
   const mesh = useMemo(
-    () => generateStorageBox(params, cavityContours),
-    [params, cavityContours],
+    () => generateStorageBox(params, footprint.contour),
+    [params, footprint.contour],
   )
 
   const previewGeometry = useMemo(
@@ -86,28 +80,33 @@ export function BoxGenerator() {
   if (uploadError) {
     warnings.push(uploadError)
   }
-  if (!model && squareCutouts.enabled) {
-    warnings.push(...squareCutoutResult.warnings)
+  if (model) {
+    warnings.push(...model.notes)
+    if (model.sizeMm.z + params.clearanceZMm > params.cavityDepthMm + 0.05) {
+      warnings.push('镂空深度小于模型高度加 Z 余量，模型将高出盒口。')
+    }
   }
   if (model && model.triangleCount > 250_000) {
     warnings.push('模型超过 250k 三角面，建议先简化模型以提升交互速度。')
+  }
+  if (model) {
+    const neededLength = model.sizeMm.x + params.wallMm * 2 + params.clearanceXYMm * 2
+    const neededWidth = model.sizeMm.y + params.wallMm * 2 + params.clearanceXYMm * 2
+    const neededHeight = model.sizeMm.z + params.bottomMm + params.clearanceZMm
+    if (
+      neededLength > PARAM_LIMITS.lengthMm.max
+      || neededWidth > PARAM_LIMITS.widthMm.max
+      || neededHeight > PARAM_LIMITS.heightMm.max
+    ) {
+      warnings.push(
+        `模型加余量超出 ${PARAM_LIMITS.lengthMm.max}×${PARAM_LIMITS.widthMm.max}×${PARAM_LIMITS.heightMm.max}mm 上限，盒体尺寸已被截断，可能无法完整容纳模型。`,
+      )
+    }
   }
 
   const updateParam = (key: keyof BoxParams, value: number) => {
     setParams((current) =>
       clampBoxParams({
-        ...current,
-        [key]: value,
-      }),
-    )
-  }
-
-  const updateSquareCutout = <Key extends keyof SquareCutoutParams>(
-    key: Key,
-    value: SquareCutoutParams[Key],
-  ) => {
-    setSquareCutouts((current) =>
-      clampSquareCutoutParams({
         ...current,
         [key]: value,
       }),
@@ -136,11 +135,39 @@ export function BoxGenerator() {
     }
   }
 
+  const setCavityMode = (cavityMode: BoxParams['cavityMode']) => {
+    setParams((current) => ({ ...current, cavityMode }))
+  }
+
+  const setModelScalePercent = (percent: number) => {
+    if (!model) {
+      return
+    }
+    const scale = Math.min(1000, Math.max(10, percent)) / 100
+    const next = updateParsedModelTransform(model, { ...model.transform, scale })
+    setModel(next)
+    // 缩放后按新包围盒自动重新适配盒体尺寸
+    setParams((current) => autoFitParamsForSize(current, next.sizeMm))
+  }
+
+  const refitToModel = () => {
+    if (model) {
+      setParams((current) => autoFitParamsForSize(current, model.sizeMm))
+    }
+  }
+
+  const removeModel = () => {
+    setModel(undefined)
+    setUploadError(undefined)
+    setShowModel(true)
+  }
+
   const resetAll = () => {
     setParams(DEFAULT_BOX_PARAMS)
     setModel(undefined)
     setUploadError(undefined)
-    setSquareCutouts(DEFAULT_SQUARE_CUTOUTS)
+    setShowModel(true)
+    setConfirmResetOpen(false)
   }
 
   const export3mf = () => {
@@ -168,7 +195,7 @@ export function BoxGenerator() {
             </div>
             <nav className="hidden items-center gap-4 text-sm font-medium md:flex">
               <span className="text-foreground">收纳盒生成</span>
-              <span className="text-foreground/60">STL / 3MF</span>
+              <span className="text-foreground/60">STL · 3MF · OBJ · PLY · glTF · AMF</span>
             </nav>
             <div className="ml-auto flex items-center gap-0.5">
               <Button asChild variant="ghost" size="icon" className="h-8 w-8 px-0">
@@ -187,7 +214,7 @@ export function BoxGenerator() {
         <div className="flex flex-1 flex-col lg:min-h-0 lg:flex-row">
           <section className="relative order-1 h-[52svh] min-h-[360px] flex-1 overflow-hidden bg-secondary/60 lg:h-auto lg:min-h-[calc(100svh-3.5rem)]">
             <div className="absolute inset-0">
-              <BoxPreview mesh={mesh} modelGeometry={previewGeometry} showModel />
+              <BoxPreview mesh={mesh} modelGeometry={previewGeometry} showModel={showModel} />
             </div>
             {warnings.length > 0 ? (
               <div className="pointer-events-none absolute inset-x-4 bottom-4 z-10 rounded-md border border-amber-300 bg-amber-50/95 px-4 py-3 text-sm text-amber-950 shadow-sm backdrop-blur dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-100">
@@ -207,7 +234,7 @@ export function BoxGenerator() {
                   disabled={isParsing}
                 >
                   <Upload className="size-4" />
-                  上传
+                  {isParsing ? '解析中…' : '上传'}
                 </Button>
                 <Button
                   type="button"
@@ -223,7 +250,7 @@ export function BoxGenerator() {
                   variant="outline"
                   size="icon"
                   className="h-10 w-10 bg-background"
-                  onClick={resetAll}
+                  onClick={() => setConfirmResetOpen(true)}
                   title="重置"
                 >
                   <RefreshCw className="size-4" />
@@ -232,77 +259,84 @@ export function BoxGenerator() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".stl,.3mf,model/stl,model/3mf"
+                accept={MODEL_FILE_ACCEPT}
                 className="sr-only"
                 onChange={(event) => void handleUpload(event.target.files?.[0])}
               />
 
-              <section className="rounded-lg bg-secondary/60 p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Grid3X3 className="size-4 text-muted-foreground" />
-                    <h2 className="text-sm font-semibold">无模型镂空</h2>
+              {model ? (
+                <section className="rounded-lg bg-secondary/60 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-sm font-semibold">已上传模型</h2>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => setShowModel((current) => !current)}
+                      title={showModel ? '隐藏模型，仅查看盒体' : '显示模型'}
+                    >
+                      {showModel ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+                      <span className="sr-only">{showModel ? '隐藏模型' : '显示模型'}</span>
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    variant={!model && squareCutouts.enabled ? 'default' : 'outline'}
-                    size="sm"
-                    disabled={!!model}
-                    onClick={() => updateSquareCutout('enabled', !squareCutouts.enabled)}
-                  >
-                    方形阵列
-                  </Button>
-                </div>
-                <div className="space-y-4">
-                  <NumberControl
-                    label="单格边长"
-                    value={squareCutouts.sizeMm}
-                    min={6}
-                    max={80}
-                    step={1}
-                    disabled={!!model || !squareCutouts.enabled}
-                    onChange={(value) => updateSquareCutout('sizeMm', value)}
-                  />
-                  <NumberControl
-                    label="列数"
-                    value={squareCutouts.columns}
-                    min={1}
-                    max={8}
-                    step={1}
-                    unit=""
-                    disabled={!!model || !squareCutouts.enabled}
-                    onChange={(value) => updateSquareCutout('columns', value)}
-                  />
-                  <NumberControl
-                    label="行数"
-                    value={squareCutouts.rows}
-                    min={1}
-                    max={8}
-                    step={1}
-                    unit=""
-                    disabled={!!model || !squareCutouts.enabled}
-                    onChange={(value) => updateSquareCutout('rows', value)}
-                  />
-                  <NumberControl
-                    label="间距"
-                    value={squareCutouts.gapMm}
-                    min={0}
-                    max={30}
-                    step={1}
-                    disabled={!!model || !squareCutouts.enabled}
-                    onChange={(value) => updateSquareCutout('gapMm', value)}
-                  />
-                  <NumberControl
-                    label="口沿圆角"
-                    value={squareCutouts.cornerRadiusMm}
-                    min={0}
-                    max={12}
-                    step={0.5}
-                    disabled={!!model || !squareCutouts.enabled}
-                    onChange={(value) => updateSquareCutout('cornerRadiusMm', value)}
-                  />
-                </div>
-              </section>
+                  <div className="space-y-1 text-sm text-muted-foreground">
+                    <p className="truncate text-foreground" title={model.fileName}>
+                      {model.fileName}
+                    </p>
+                    <p>
+                      包围盒 {model.sizeMm.x} × {model.sizeMm.y} × {model.sizeMm.z} mm
+                    </p>
+                    <p>{model.triangleCount.toLocaleString()} 三角面</p>
+                  </div>
+                  <div className="mt-3">
+                    <NumberControl
+                      label="缩放"
+                      value={Math.round(model.transform.scale * 1000) / 10}
+                      min={10}
+                      max={1000}
+                      step={1}
+                      unit="%"
+                      logarithmic
+                      onChange={setModelScalePercent}
+                    />
+                    <div className="mt-2 grid grid-cols-4 gap-2">
+                      {[50, 100, 200, 400].map((percent) => (
+                        <Button
+                          key={percent}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 bg-background px-0 text-xs"
+                          onClick={() => setModelScalePercent(percent)}
+                        >
+                          {percent}%
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 bg-background"
+                      onClick={refitToModel}
+                    >
+                      按模型适配尺寸
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 bg-background"
+                      onClick={removeModel}
+                    >
+                      移除模型
+                    </Button>
+                  </div>
+                </section>
+              ) : null}
 
               <section className="rounded-lg bg-secondary/60 p-4">
                 <h2 className="mb-3 text-sm font-semibold">盒体尺寸</h2>
@@ -310,25 +344,19 @@ export function BoxGenerator() {
                   <NumberControl
                     label="长"
                     value={params.lengthMm}
-                    min={20}
-                    max={320}
-                    step={1}
+                    {...PARAM_LIMITS.lengthMm}
                     onChange={(value) => updateParam('lengthMm', value)}
                   />
                   <NumberControl
                     label="宽"
                     value={params.widthMm}
-                    min={20}
-                    max={260}
-                    step={1}
+                    {...PARAM_LIMITS.widthMm}
                     onChange={(value) => updateParam('widthMm', value)}
                   />
                   <NumberControl
                     label="高"
                     value={params.heightMm}
-                    min={10}
-                    max={180}
-                    step={1}
+                    {...PARAM_LIMITS.heightMm}
                     onChange={(value) => updateParam('heightMm', value)}
                   />
                 </div>
@@ -340,49 +368,80 @@ export function BoxGenerator() {
                   <NumberControl
                     label="壁厚"
                     value={params.wallMm}
-                    min={0.8}
-                    max={8}
-                    step={0.2}
+                    {...PARAM_LIMITS.wallMm}
                     onChange={(value) => updateParam('wallMm', value)}
                   />
                   <NumberControl
                     label="底厚"
                     value={params.bottomMm}
-                    min={0.8}
-                    max={8}
-                    step={0.2}
+                    {...PARAM_LIMITS.bottomMm}
                     onChange={(value) => updateParam('bottomMm', value)}
                   />
                   <NumberControl
                     label="圆角"
                     value={params.cornerRadiusMm}
-                    min={0}
-                    max={20}
-                    step={0.5}
+                    {...PARAM_LIMITS.cornerRadiusMm}
                     onChange={(value) => updateParam('cornerRadiusMm', value)}
+                  />
+                </div>
+              </section>
+
+              <section className="rounded-lg bg-secondary/60 p-4">
+                <h2 className="mb-3 text-sm font-semibold">镂空设置</h2>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={params.cavityMode === 'contour' ? 'default' : 'outline'}
+                      className={params.cavityMode === 'contour' ? '' : 'bg-background'}
+                      onClick={() => setCavityMode('contour')}
+                      disabled={!model}
+                    >
+                      跟随模型轮廓
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={params.cavityMode === 'rect' ? 'default' : 'outline'}
+                      className={params.cavityMode === 'rect' ? '' : 'bg-background'}
+                      onClick={() => setCavityMode('rect')}
+                    >
+                      矩形内腔
+                    </Button>
+                  </div>
+                  {!model ? (
+                    <p className="text-xs text-muted-foreground">
+                      上传模型后，内腔可按模型俯视轮廓镂空。
+                    </p>
+                  ) : null}
+                  <NumberControl
+                    label="镂空深度"
+                    value={params.cavityDepthMm}
+                    min={PARAM_LIMITS.cavityDepthMm.min}
+                    max={Math.max(
+                      PARAM_LIMITS.cavityDepthMm.min,
+                      Math.round((params.heightMm - params.bottomMm) * 10) / 10,
+                    )}
+                    step={PARAM_LIMITS.cavityDepthMm.step}
+                    onChange={(value) => updateParam('cavityDepthMm', value)}
                   />
                   <NumberControl
                     label="XY 余量"
                     value={params.clearanceXYMm}
-                    min={0.2}
-                    max={12}
-                    step={0.1}
+                    {...PARAM_LIMITS.clearanceXYMm}
                     onChange={(value) => updateParam('clearanceXYMm', value)}
                   />
                   <NumberControl
                     label="Z 余量"
                     value={params.clearanceZMm}
-                    min={0.2}
-                    max={20}
-                    step={0.1}
+                    {...PARAM_LIMITS.clearanceZMm}
                     onChange={(value) => updateParam('clearanceZMm', value)}
                   />
                   <NumberControl
                     label="轮廓平滑"
                     value={params.contourSmoothing}
-                    min={12}
-                    max={96}
-                    step={4}
+                    {...PARAM_LIMITS.contourSmoothing}
                     unit=""
                     onChange={(value) => updateParam('contourSmoothing', value)}
                   />
@@ -392,6 +451,79 @@ export function BoxGenerator() {
           </aside>
         </div>
       </main>
+
+      {confirmResetOpen ? (
+        <ConfirmDialog
+          title="重置所有设置？"
+          description="将恢复默认参数，并移除已上传的模型。此操作无法撤销。"
+          confirmLabel="重置"
+          cancelLabel="取消"
+          onConfirm={resetAll}
+          onCancel={() => setConfirmResetOpen(false)}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+type ConfirmDialogProps = {
+  title: string
+  description: string
+  confirmLabel: string
+  cancelLabel: string
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+function ConfirmDialog({
+  title,
+  description,
+  confirmLabel,
+  cancelLabel,
+  onConfirm,
+  onCancel,
+}: ConfirmDialogProps) {
+  const confirmRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    confirmRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onCancel()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onCancel])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onCancel}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={title}
+        className="w-full max-w-sm rounded-lg border bg-background p-6 shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold">{title}</h2>
+        <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={onCancel}>
+            {cancelLabel}
+          </Button>
+          <Button
+            ref={confirmRef}
+            type="button"
+            variant="destructive"
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -403,12 +535,46 @@ function NumberControl({
   max,
   step,
   unit = 'mm',
-  disabled = false,
+  logarithmic = false,
   onChange,
 }: NumberControlProps) {
   const safeValue = Number.isFinite(value) ? value : min
+
+  const sliderMin = logarithmic ? Math.log10(min) : min
+  const sliderMax = logarithmic ? Math.log10(max) : max
+  const sliderStep = logarithmic ? (sliderMax - sliderMin) / 200 : step
+  const sliderValue = logarithmic
+    ? Math.log10(Math.min(max, Math.max(min, safeValue)))
+    : safeValue
+
+  const handleSliderChange = (raw: number) => {
+    if (!logarithmic) {
+      onChange(raw)
+      return
+    }
+    const scaled = 10 ** raw
+    // 按 step 精度取整,避免出现 153.27% 这类零碎数值
+    onChange(Math.min(max, Math.max(min, Math.round(scaled / step) * step)))
+  }
+  // 输入草稿:输入过程中不钳制数值,失焦或回车后再提交,
+  // 避免输入“150”时键入“1”被立即吸附到最小值。
+  const [draft, setDraft] = useState<string | null>(null)
+
+  useEffect(() => {
+    setDraft(null)
+  }, [value])
+
+  const commit = (raw: string) => {
+    setDraft(null)
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) {
+      return
+    }
+    onChange(Math.min(max, Math.max(min, parsed)))
+  }
+
   return (
-    <label className={`grid gap-2 ${disabled ? 'opacity-50' : ''}`}>
+    <label className="grid gap-2">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm text-muted-foreground">{label}</span>
         <span className="flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-sm tabular-nums">
@@ -419,9 +585,16 @@ function NumberControl({
             min={min}
             max={max}
             step={step}
-            value={safeValue}
-            disabled={disabled}
-            onChange={(event) => onChange(Number(event.target.value))}
+            value={draft ?? safeValue}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={(event) => commit(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur()
+              } else if (event.key === 'Escape') {
+                setDraft(null)
+              }
+            }}
           />
           {unit}
         </span>
@@ -429,12 +602,11 @@ function NumberControl({
       <input
         aria-label={`${label} slider`}
         type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={safeValue}
-        disabled={disabled}
-        onChange={(event) => onChange(Number(event.target.value))}
+        min={sliderMin}
+        max={sliderMax}
+        step={sliderStep}
+        value={sliderValue}
+        onChange={(event) => handleSliderChange(Number(event.target.value))}
         className="h-2 w-full accent-primary"
       />
     </label>

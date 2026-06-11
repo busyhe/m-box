@@ -2,6 +2,9 @@ import type { BufferGeometry } from 'three'
 
 export type ContourMode = 'concave' | 'convexFallback'
 
+/** 镂空方式:contour = 跟随模型俯视轮廓,rect = 矩形内腔 */
+export type CavityMode = 'contour' | 'rect'
+
 export type BoxParams = {
   lengthMm: number
   widthMm: number
@@ -13,9 +16,12 @@ export type BoxParams = {
   clearanceZMm: number
   contourMode: ContourMode
   contourSmoothing: number
+  cavityMode: CavityMode
+  /** 镂空深度,自顶部开口向下计算;最大为 heightMm - bottomMm(通腔到底) */
+  cavityDepthMm: number
 }
 
-export type ModelFormat = 'stl' | '3mf'
+export type ModelFormat = 'stl' | '3mf' | 'obj' | 'ply' | 'gltf' | 'glb' | 'amf'
 
 export type ModelTransform = {
   scale: number
@@ -30,6 +36,8 @@ export type UploadedModel = {
   triangleCount: number
   sizeMm: Size3
   transform: ModelTransform
+  /** 解析过程中的提示信息(如单位换算),非错误 */
+  notes: string[]
 }
 
 export type ParsedModel = UploadedModel & {
@@ -59,15 +67,6 @@ export type MeshData = {
   triangles: Triangle[]
 }
 
-export type SquareCutoutParams = {
-  enabled: boolean
-  sizeMm: number
-  columns: number
-  rows: number
-  gapMm: number
-  cornerRadiusMm: number
-}
-
 export type FootprintResult = {
   contour: Point2[]
   mode: ContourMode
@@ -81,6 +80,22 @@ export type GenerationResult = {
   export3mf: () => Promise<Blob>
 }
 
+// 参数范围参考市面常见消费级打印机打印体积:
+// Bambu A1 mini 180³ / A1·P1·X1 256³ / Prusa MK4S 250×210×220
+// Ender-3 系列 220×220×250 / Creality K1 Max 300³
+export const PARAM_LIMITS = {
+  lengthMm: { min: 20, max: 350, step: 1 },
+  widthMm: { min: 20, max: 350, step: 1 },
+  heightMm: { min: 10, max: 300, step: 1 },
+  wallMm: { min: 0.8, max: 6, step: 0.2 },
+  bottomMm: { min: 0.8, max: 6, step: 0.2 },
+  cornerRadiusMm: { min: 0, max: 30, step: 0.5 },
+  clearanceXYMm: { min: 0.2, max: 10, step: 0.1 },
+  clearanceZMm: { min: 0.2, max: 20, step: 0.1 },
+  contourSmoothing: { min: 12, max: 96, step: 4 },
+  cavityDepthMm: { min: 2, max: 300, step: 0.5 },
+} as const satisfies Partial<Record<keyof BoxParams, { min: number, max: number, step: number }>>
+
 export const DEFAULT_BOX_PARAMS: BoxParams = {
   lengthMm: 80,
   widthMm: 60,
@@ -92,6 +107,8 @@ export const DEFAULT_BOX_PARAMS: BoxParams = {
   clearanceZMm: 3,
   contourMode: 'concave',
   contourSmoothing: 32,
+  cavityMode: 'contour',
+  cavityDepthMm: 33,
 }
 
 export const DEFAULT_MODEL_TRANSFORM: ModelTransform = {
@@ -99,13 +116,4 @@ export const DEFAULT_MODEL_TRANSFORM: ModelTransform = {
   rotateX: 0,
   rotateY: 0,
   rotateZ: 0,
-}
-
-export const DEFAULT_SQUARE_CUTOUTS: SquareCutoutParams = {
-  enabled: false,
-  sizeMm: 18,
-  columns: 2,
-  rows: 2,
-  gapMm: 4,
-  cornerRadiusMm: 1.5,
 }
