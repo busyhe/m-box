@@ -40,7 +40,12 @@ import {
   positionsToPreviewGeometry,
 } from './geometry'
 import { build3mfFileName, create3mfBlob } from './export-3mf'
-import { MODEL_FILE_ACCEPT, parseModelFile, updateParsedModelTransform } from './model-loader'
+import {
+  MODEL_FILE_ACCEPT,
+  SUPPORTED_MODEL_EXTENSIONS,
+  parseModelFile,
+  updateParsedModelTransform,
+} from './model-loader'
 import { BoxPreview } from './BoxPreview'
 
 const PARAMS_STORAGE_KEY = 'm-box:box-params:v1'
@@ -88,6 +93,10 @@ function loadStoredParams(): BoxParams | undefined {
     return undefined
   }
 }
+
+const SUPPORTED_FORMATS_LABEL = SUPPORTED_MODEL_EXTENSIONS.map((extension) =>
+  extension.slice(1).toUpperCase(),
+).join(' · ')
 
 const SHAPES_STORAGE_KEY = 'm-box:shapes:v1'
 
@@ -454,10 +463,6 @@ export function BoxGenerator() {
               </span>
               <span className="font-bold">M-Box</span>
             </div>
-            <nav className="hidden items-center gap-4 text-sm font-medium md:flex">
-              <span className="text-foreground">收纳盒生成</span>
-              <span className="text-foreground/60">STL · 3MF · OBJ · PLY · glTF · AMF</span>
-            </nav>
             <div className="ml-auto flex items-center gap-0.5">
               <Button asChild variant="ghost" size="icon" className="h-8 w-8 px-0">
                 <a href={siteConfig.links.github} target="_blank" rel="noreferrer">
@@ -498,6 +503,7 @@ export function BoxGenerator() {
                   className="h-10 flex-1 gap-2 bg-background"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isParsing}
+                  title={`支持 ${SUPPORTED_FORMATS_LABEL}`}
                 >
                   <Upload className="size-4" />
                   {isParsing ? '解析中…' : '上传'}
@@ -522,6 +528,9 @@ export function BoxGenerator() {
                   <RefreshCw className="size-4" />
                 </Button>
               </div>
+              <p className="text-center text-xs text-muted-foreground">
+                支持 {SUPPORTED_FORMATS_LABEL}
+              </p>
               <input
                 ref={fileInputRef}
                 type="file"
