@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   Box,
   Circle,
@@ -6,12 +6,17 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileBox,
   Github,
   Hexagon,
   Octagon,
   RectangleHorizontal,
   RefreshCw,
+  Printer,
+  Ruler,
+  Shapes,
   Square,
+  SquareDashed,
   Trash2,
   Triangle,
   Upload,
@@ -224,6 +229,31 @@ type NumberControlProps = {
   /** 滑杆使用对数刻度,适合缩放类参数,使放大/缩小行程对称 */
   logarithmic?: boolean
   onChange: (value: number) => void
+}
+
+type SettingsSectionProps = {
+  icon: ReactNode
+  title: string
+  action?: ReactNode
+  children: ReactNode
+}
+
+/** 设置面板分区卡片:统一图标标题 + 内容区 */
+function SettingsSection({ icon, title, action, children }: SettingsSectionProps) {
+  return (
+    <section className="rounded-xl border bg-card p-4 shadow-xs">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold tracking-tight">
+          <span className="flex size-6 items-center justify-center rounded-md bg-primary/10 text-primary [&_svg]:size-3.5">
+            {icon}
+          </span>
+          {title}
+        </h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  )
 }
 
 export function BoxGenerator() {
@@ -494,34 +524,34 @@ export function BoxGenerator() {
             ) : null}
           </section>
 
-          <aside className="order-2 w-full shrink-0 lg:w-80">
-            <div className="space-y-4 p-4 lg:sticky lg:top-14 lg:max-h-[calc(100svh-3.5rem)] lg:overflow-auto lg:pr-6">
+          <aside className="order-2 w-full shrink-0 bg-background lg:w-[21.5rem] lg:border-l">
+            <div className="space-y-3 p-4 lg:sticky lg:top-14 lg:max-h-[calc(100svh-3.5rem)] lg:overflow-auto">
               <div className="flex gap-2">
                 <Button
                   type="button"
                   variant="outline"
-                  className="h-10 flex-1 gap-2 bg-background"
+                  className="h-10 flex-1 gap-2"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isParsing}
                   title={`支持 ${SUPPORTED_FORMATS_LABEL}`}
                 >
                   <Upload className="size-4" />
-                  {isParsing ? '解析中…' : '上传'}
+                  {isParsing ? '解析中…' : '上传模型'}
                 </Button>
                 <Button
                   type="button"
-                  className="h-10 flex-1 gap-2 bg-[#0f172a] text-white hover:bg-[#0f172a]/90"
+                  className="h-10 flex-1 gap-2"
                   onClick={export3mf}
                   disabled={isParsing}
                 >
                   <Download className="size-4" />
-                  导出
+                  导出 3MF
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
                   size="icon"
-                  className="h-10 w-10 bg-background"
+                  className="h-10 w-10 text-muted-foreground hover:text-foreground"
                   onClick={() => setConfirmResetOpen(true)}
                   title="重置"
                 >
@@ -540,31 +570,34 @@ export function BoxGenerator() {
               />
 
               {model ? (
-                <section className="rounded-lg bg-secondary/60 p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h2 className="text-sm font-semibold">已上传模型</h2>
+                <SettingsSection
+                  icon={<FileBox />}
+                  title="已上传模型"
+                  action={(
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
                       onClick={() => setShowModel((current) => !current)}
                       title={showModel ? '隐藏模型，仅查看盒体' : '显示模型'}
                     >
                       {showModel ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
                       <span className="sr-only">{showModel ? '隐藏模型' : '显示模型'}</span>
                     </Button>
-                  </div>
-                  <div className="space-y-1 text-sm text-muted-foreground">
-                    <p className="truncate text-foreground" title={model.fileName}>
+                  )}
+                >
+                  <div className="rounded-lg bg-secondary/50 px-3 py-2.5 text-xs text-muted-foreground">
+                    <p className="truncate text-sm font-medium text-foreground" title={model.fileName}>
                       {model.fileName}
                     </p>
-                    <p>
-                      包围盒 {model.sizeMm.x} × {model.sizeMm.y} × {model.sizeMm.z} mm
+                    <p className="mt-1 tabular-nums">
+                      {model.sizeMm.x} × {model.sizeMm.y} × {model.sizeMm.z} mm
+                      <span className="mx-1.5 opacity-50">·</span>
+                      {model.triangleCount.toLocaleString()} 三角面
                     </p>
-                    <p>{model.triangleCount.toLocaleString()} 三角面</p>
                   </div>
-                  <div className="mt-3">
+                  <div className="mt-4">
                     <NumberControl
                       label="缩放"
                       value={Math.round(model.transform.scale * 1000) / 10}
@@ -575,14 +608,14 @@ export function BoxGenerator() {
                       logarithmic
                       onChange={setModelScalePercent}
                     />
-                    <div className="mt-2 grid grid-cols-4 gap-2">
+                    <div className="mt-2.5 grid grid-cols-4 gap-1.5">
                       {[50, 100, 200, 400].map((percent) => (
                         <Button
                           key={percent}
                           type="button"
-                          variant="outline"
+                          variant="secondary"
                           size="sm"
-                          className="h-7 bg-background px-0 text-xs"
+                          className="h-7 px-0 text-xs tabular-nums"
                           onClick={() => setModelScalePercent(percent)}
                         >
                           {percent}%
@@ -590,12 +623,12 @@ export function BoxGenerator() {
                       ))}
                     </div>
                   </div>
-                  <div className="mt-3 flex gap-2">
+                  <div className="mt-4 flex gap-2">
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="flex-1 bg-background"
+                      className="flex-1"
                       onClick={refitToModel}
                     >
                       按模型适配尺寸
@@ -604,39 +637,37 @@ export function BoxGenerator() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="flex-1 bg-background"
+                      className="flex-1 text-muted-foreground hover:text-destructive"
                       onClick={removeModel}
                     >
                       移除模型
                     </Button>
                   </div>
-                </section>
+                </SettingsSection>
               ) : null}
 
-              <section className="rounded-lg bg-secondary/60 p-4">
-                <h2 className="mb-3 text-sm font-semibold">基础图形</h2>
-                <div className="grid grid-cols-3 gap-2">
+              <SettingsSection icon={<Shapes />} title="基础图形">
+                <div className="grid grid-cols-4 gap-1.5">
                   {SHAPE_KINDS.map((kind) => (
-                    <Button
+                    <button
                       key={kind}
                       type="button"
-                      variant="outline"
-                      size="sm"
-                      className="gap-1.5 bg-background"
+                      className="flex flex-col items-center gap-1 rounded-lg border bg-background py-2 text-[11px] text-muted-foreground shadow-xs transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
                       onClick={() => addShape(kind)}
+                      title={`添加${SHAPE_LABELS[kind]}`}
                     >
                       {shapeIcon(kind)}
                       {SHAPE_LABELS[kind]}
-                    </Button>
+                    </button>
                   ))}
                 </div>
                 {shapes.map((shape, index) => {
                   const dimensions = SHAPE_DIMENSIONS[shape.kind]
                   return (
-                    <div key={shape.id} className="mt-3 rounded-md border bg-background/60 p-3">
+                    <div key={shape.id} className="mt-3 rounded-lg border bg-secondary/30 p-3">
                       <div className="mb-3 flex items-center justify-between">
                         <span className="flex items-center gap-1.5 text-sm font-medium">
-                          {shapeIcon(shape.kind)}
+                          <span className="text-primary">{shapeIcon(shape.kind)}</span>
                           {SHAPE_LABELS[shape.kind]} {index + 1}
                         </span>
                         <Button
@@ -708,10 +739,9 @@ export function BoxGenerator() {
                     </div>
                   )
                 })}
-              </section>
+              </SettingsSection>
 
-              <section className="rounded-lg bg-secondary/60 p-4">
-                <h2 className="mb-3 text-sm font-semibold">盒体尺寸</h2>
+              <SettingsSection icon={<Ruler />} title="盒体尺寸">
                 <div className="space-y-4">
                   <NumberControl
                     label="长"
@@ -732,10 +762,9 @@ export function BoxGenerator() {
                     onChange={(value) => updateParam('heightMm', value)}
                   />
                 </div>
-              </section>
+              </SettingsSection>
 
-              <section className="rounded-lg bg-secondary/60 p-4">
-                <h2 className="mb-3 text-sm font-semibold">打印参数</h2>
+              <SettingsSection icon={<Printer />} title="打印参数">
                 <div className="space-y-4">
                   <NumberControl
                     label="壁厚"
@@ -756,33 +785,36 @@ export function BoxGenerator() {
                     onChange={(value) => updateParam('cornerRadiusMm', value)}
                   />
                 </div>
-              </section>
+              </SettingsSection>
 
-              <section className="rounded-lg bg-secondary/60 p-4">
-                <h2 className="mb-3 text-sm font-semibold">镂空设置</h2>
+              <SettingsSection icon={<SquareDashed />} title="镂空设置">
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
+                  <div className="grid grid-cols-2 gap-1 rounded-lg bg-secondary p-1">
+                    <button
                       type="button"
-                      size="sm"
-                      variant={params.cavityMode === 'contour' ? 'default' : 'outline'}
-                      className={params.cavityMode === 'contour' ? '' : 'bg-background'}
+                      className={`h-7 rounded-md text-xs font-medium transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 ${
+                        params.cavityMode === 'contour'
+                          ? 'bg-background text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
                       onClick={() => setCavityMode('contour')}
                       disabled={!model}
                     >
                       跟随模型轮廓
-                    </Button>
-                    <Button
+                    </button>
+                    <button
                       type="button"
-                      size="sm"
-                      variant={params.cavityMode === 'rect' ? 'default' : 'outline'}
-                      className={params.cavityMode === 'rect' ? '' : 'bg-background'}
+                      className={`h-7 rounded-md text-xs font-medium transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none ${
+                        params.cavityMode === 'rect'
+                          ? 'bg-background text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
                       onClick={() => setCavityMode('rect')}
                     >
                       矩形内腔
-                    </Button>
+                    </button>
                   </div>
-                  
+
                   <NumberControl
                     label="镂空深度"
                     value={params.cavityDepthMm}
@@ -814,7 +846,7 @@ export function BoxGenerator() {
                     onChange={(value) => updateParam('contourSmoothing', value)}
                   />
                 </div>
-              </section>
+              </SettingsSection>
 
             </div>
           </aside>
@@ -942,14 +974,18 @@ function NumberControl({
     onChange(Math.min(max, Math.max(min, parsed)))
   }
 
+  const fillPercent = sliderMax > sliderMin
+    ? Math.min(100, Math.max(0, ((sliderValue - sliderMin) / (sliderMax - sliderMin)) * 100))
+    : 0
+
   return (
-    <label className="grid gap-2">
+    <label className="grid gap-1.5">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-sm text-muted-foreground">{label}</span>
-        <span className="flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-sm tabular-nums">
+        <span className="text-[13px] font-medium text-foreground/80">{label}</span>
+        <span className="flex h-7 items-center gap-1 rounded-md border border-input bg-background px-2 text-xs tabular-nums shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
           <input
             aria-label={label}
-            className="w-16 bg-transparent text-right outline-none"
+            className="w-14 bg-transparent text-right font-medium outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             type="number"
             min={min}
             max={max}
@@ -965,7 +1001,7 @@ function NumberControl({
               }
             }}
           />
-          {unit}
+          {unit ? <span className="text-muted-foreground">{unit}</span> : null}
         </span>
       </div>
       <input
@@ -976,7 +1012,8 @@ function NumberControl({
         step={sliderStep}
         value={sliderValue}
         onChange={(event) => handleSliderChange(Number(event.target.value))}
-        className="h-2 w-full accent-primary"
+        className="ui-slider"
+        style={{ '--slider-fill': `${fillPercent}%` } as CSSProperties}
       />
     </label>
   )
