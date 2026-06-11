@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react'
 import {
   AmbientLight,
   Box3,
-  Color,
   DirectionalLight,
   EdgesGeometry,
   Group,
@@ -39,11 +38,14 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
     }
 
     const scene = new Scene()
-    scene.background = new Color('#f7f7f4')
 
-    const renderer = new WebGLRenderer({ antialias: true, alpha: false })
+    const renderer = new WebGLRenderer({ antialias: true, alpha: true })
+    renderer.setClearAlpha(0)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(container.clientWidth, container.clientHeight)
+    renderer.domElement.style.display = 'block'
+    renderer.domElement.style.background = 'transparent'
+    renderer.domElement.style.border = '0'
     renderer.domElement.style.cursor = 'grab'
     renderer.domElement.style.touchAction = 'pan-y'
     container.append(renderer.domElement)
@@ -96,11 +98,17 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
     let dragging = false
     let dragStartX = 0
     let dragStartY = 0
+    let dragStartPitch = 0
     let currentYaw = 0
     let targetYaw = 0
+    let currentPitch = 0
+    let targetPitch = 0
     let viewStep = 0
     const yawStep = Math.PI / 2
     const dragThreshold = 44
+    const pitchSensitivity = 0.008
+    const minPitch = -Math.PI / 3
+    const maxPitch = Math.PI / 3
     const setViewStep = (nextStep: number) => {
       viewStep = wrapViewStep(nextStep)
       targetYaw = viewStep * yawStep
@@ -115,6 +123,11 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
       if (Math.abs(shortestAngleDelta(currentYaw, targetYaw)) < 0.001) {
         currentYaw = targetYaw
       }
+      currentPitch += (targetPitch - currentPitch) * 0.24
+      if (Math.abs(currentPitch - targetPitch) < 0.001) {
+        currentPitch = targetPitch
+      }
+      group.rotation.x = currentPitch
       group.rotation.z = currentYaw
       renderer.render(scene, camera)
       frame = window.requestAnimationFrame(render)
@@ -125,6 +138,7 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
       dragging = true
       dragStartX = event.clientX
       dragStartY = event.clientY
+      dragStartPitch = targetPitch
       renderer.domElement.style.cursor = 'grabbing'
       renderer.domElement.setPointerCapture(event.pointerId)
     }
@@ -134,9 +148,10 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
       }
       const dx = event.clientX - dragStartX
       const dy = event.clientY - dragStartY
-      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) {
+      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
         event.preventDefault()
       }
+      targetPitch = clamp(dragStartPitch + dy * pitchSensitivity, minPitch, maxPitch)
     }
     const onPointerUp = (event: PointerEvent) => {
       const dx = event.clientX - dragStartX
@@ -152,11 +167,14 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
     }
     const onDoubleClick = () => {
       setViewStep(0)
+      targetPitch = 0
     }
     const onResize = () => {
       renderer.setSize(container.clientWidth, container.clientHeight)
       fitCamera(camera, boxGeometry, container.clientWidth, container.clientHeight)
     }
+    const resizeObserver = new ResizeObserver(onResize)
+    resizeObserver.observe(container)
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
     renderer.domElement.addEventListener('pointermove', onPointerMove)
@@ -171,6 +189,7 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
       renderer.domElement.removeEventListener('pointerup', onPointerUp)
       renderer.domElement.removeEventListener('dblclick', onDoubleClick)
       window.removeEventListener('resize', onResize)
+      resizeObserver.disconnect()
       boxMaterial.dispose()
       edgeMaterial.dispose()
       edges.geometry.dispose()
@@ -190,7 +209,7 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
   return (
     <div
       ref={containerRef}
-      className="h-[52vh] min-h-[360px] w-full overflow-hidden rounded-sm border bg-[#f7f7f4] shadow-xl lg:h-[calc(100svh-8.5rem)]"
+      className="h-full w-full overflow-hidden"
       aria-label="3D preview of the generated storage box"
     />
   )
@@ -228,4 +247,8 @@ function shortestAngleDelta(from: number, to: number) {
 
 function wrapViewStep(step: number) {
   return ((step % 4) + 4) % 4
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }

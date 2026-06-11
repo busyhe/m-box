@@ -59,6 +59,15 @@ export type MeshData = {
   triangles: Triangle[]
 }
 
+export type SquareCutoutParams = {
+  enabled: boolean
+  sizeMm: number
+  columns: number
+  rows: number
+  gapMm: number
+  cornerRadiusMm: number
+}
+
 export type FootprintResult = {
   contour: Point2[]
   mode: ContourMode
@@ -90,4 +99,13 @@ export const DEFAULT_MODEL_TRANSFORM: ModelTransform = {
   rotateX: 0,
   rotateY: 0,
   rotateZ: 0,
+}
+
+export const DEFAULT_SQUARE_CUTOUTS: SquareCutoutParams = {
+  enabled: false,
+  sizeMm: 18,
+  columns: 2,
+  rows: 2,
+  gapMm: 4,
+  cornerRadiusMm: 1.5,
 }

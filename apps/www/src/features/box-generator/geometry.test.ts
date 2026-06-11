@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_BOX_PARAMS } from './types'
+import { DEFAULT_BOX_PARAMS, DEFAULT_SQUARE_CUTOUTS } from './types'
 import {
   autoFitParamsForSize,
   createFootprint,
+  createSquareCutoutContours,
   generateStorageBox,
   getMeshSize,
 } from './geometry'
@@ -31,5 +32,20 @@ describe('box geometry', () => {
     expect(footprint.mode).toBe('concave')
     expect(footprint.contour.length).toBeGreaterThan(4)
     expect(footprint.warnings).toEqual([])
+  })
+
+  it('generates multiple square cutouts when no model is uploaded', () => {
+    const cutouts = createSquareCutoutContours(DEFAULT_BOX_PARAMS, {
+      ...DEFAULT_SQUARE_CUTOUTS,
+      enabled: true,
+      columns: 3,
+      rows: 2,
+    })
+    const mesh = generateStorageBox(DEFAULT_BOX_PARAMS, cutouts.contours)
+    const size = getMeshSize(mesh)
+
+    expect(cutouts.contours).toHaveLength(6)
+    expect(mesh.vertices.length).toBeGreaterThan(60)
+    expect(size).toEqual({ x: 80, y: 60, z: 35 })
   })
 })

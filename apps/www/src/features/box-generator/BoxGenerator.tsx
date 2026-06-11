@@ -1,15 +1,10 @@
 import { useMemo, useRef, useState } from 'react'
 import {
-  AlertTriangle,
   Box,
-  CheckCircle2,
   Download,
-  Eye,
-  EyeOff,
   Github,
+  Grid3X3,
   RefreshCw,
-  RotateCcw,
-  RotateCw,
   Upload,
 } from 'lucide-react'
 import { ModeSwitcher } from '@/components/header/mode-switcher'
@@ -17,20 +12,23 @@ import { siteConfig } from '@/config/site'
 import { Button } from '@workspace/ui/components/button'
 import {
   DEFAULT_BOX_PARAMS,
-  DEFAULT_MODEL_TRANSFORM,
+  DEFAULT_SQUARE_CUTOUTS,
   type BoxParams,
   type ParsedModel,
+  type SquareCutoutParams,
 } from './types'
 import {
   applyTransformToPositions,
   autoFitParamsForSize,
   clampBoxParams,
+  clampSquareCutoutParams,
   createFootprint,
+  createSquareCutoutContours,
   generateStorageBox,
   positionsToPreviewGeometry,
 } from './geometry'
 import { build3mfFileName, create3mfBlob } from './export-3mf'
-import { parseModelFile, updateParsedModelTransform } from './model-loader'
+import { parseModelFile } from './model-loader'
 import { BoxPreview } from './BoxPreview'
 
 type NumberControlProps = {
@@ -40,6 +38,7 @@ type NumberControlProps = {
   max: number
   step: number
   unit?: string
+  disabled?: boolean
   onChange: (value: number) => void
 }
 
@@ -47,10 +46,9 @@ export function BoxGenerator() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [params, setParams] = useState<BoxParams>(DEFAULT_BOX_PARAMS)
   const [model, setModel] = useState<ParsedModel | undefined>()
-  const [status, setStatus] = useState('默认空盒已生成，可直接导出 3MF。')
-  const [error, setError] = useState<string | undefined>()
+  const [uploadError, setUploadError] = useState<string | undefined>()
   const [isParsing, setIsParsing] = useState(false)
-  const [showModel, setShowModel] = useState(true)
+  const [squareCutouts, setSquareCutouts] = useState<SquareCutoutParams>(DEFAULT_SQUARE_CUTOUTS)
 
   const transformedPositions = useMemo(
     () => (model ? applyTransformToPositions(model.rawPositions, model.transform) : undefined),
@@ -62,9 +60,21 @@ export function BoxGenerator() {
     [params, transformedPositions],
   )
 
+  const squareCutoutResult = useMemo(
+    () => createSquareCutoutContours(params, squareCutouts),
+    [params, squareCutouts],
+  )
+
+  const cavityContours = useMemo(() => {
+    if (model) {
+      return [footprint.contour]
+    }
+    return squareCutouts.enabled ? squareCutoutResult.contours : [footprint.contour]
+  }, [footprint.contour, model, squareCutoutResult.contours, squareCutouts.enabled])
+
   const mesh = useMemo(
-    () => generateStorageBox(params, footprint.contour),
-    [params, footprint.contour],
+    () => generateStorageBox(params, cavityContours),
+    [params, cavityContours],
   )
 
   const previewGeometry = useMemo(
@@ -73,6 +83,12 @@ export function BoxGenerator() {
   )
 
   const warnings = [...footprint.warnings]
+  if (uploadError) {
+    warnings.push(uploadError)
+  }
+  if (!model && squareCutouts.enabled) {
+    warnings.push(...squareCutoutResult.warnings)
+  }
   if (model && model.triangleCount > 250_000) {
     warnings.push('模型超过 250k 三角面，建议先简化模型以提升交互速度。')
   }
@@ -86,23 +102,32 @@ export function BoxGenerator() {
     )
   }
 
+  const updateSquareCutout = <Key extends keyof SquareCutoutParams>(
+    key: Key,
+    value: SquareCutoutParams[Key],
+  ) => {
+    setSquareCutouts((current) =>
+      clampSquareCutoutParams({
+        ...current,
+        [key]: value,
+      }),
+    )
+  }
+
   const handleUpload = async (file: File | undefined) => {
     if (!file) {
       return
     }
 
     setIsParsing(true)
-    setError(undefined)
-    setStatus('正在解析模型并计算收纳轮廓...')
+    setUploadError(undefined)
 
     try {
       const parsed = await parseModelFile(file)
       setModel(parsed)
       setParams((current) => autoFitParamsForSize(current, parsed.sizeMm))
-      setStatus('模型已导入，盒体尺寸已按模型外形和余量自适应。')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '模型解析失败。')
-      setStatus('上传失败，请检查文件格式或模型网格。')
+      setUploadError(reason instanceof Error ? reason.message : '模型解析失败，请检查文件格式或模型网格。')
     } finally {
       setIsParsing(false)
       if (fileInputRef.current) {
@@ -111,45 +136,11 @@ export function BoxGenerator() {
     }
   }
 
-  const rotateModel = (axis: 'rotateX' | 'rotateY' | 'rotateZ') => {
-    if (!model) {
-      return
-    }
-    const transform = {
-      ...model.transform,
-      [axis]: (model.transform[axis] + 90) % 360,
-    }
-    const next = updateParsedModelTransform(model, transform)
-    setModel(next)
-    setParams((current) => autoFitParamsForSize(current, next.sizeMm))
-    setStatus('模型朝向已更新，盒体尺寸和镂空轮廓已重新计算。')
-  }
-
-  const updateScale = (scale: number) => {
-    if (!model) {
-      return
-    }
-    const next = updateParsedModelTransform(model, { ...model.transform, scale })
-    setModel(next)
-    setParams((current) => autoFitParamsForSize(current, next.sizeMm))
-    setStatus('模型缩放已更新，盒体尺寸已重新适配。')
-  }
-
-  const resetModelTransform = () => {
-    if (!model) {
-      return
-    }
-    const next = updateParsedModelTransform(model, DEFAULT_MODEL_TRANSFORM)
-    setModel(next)
-    setParams((current) => autoFitParamsForSize(current, next.sizeMm))
-    setStatus('模型姿态已重置。')
-  }
-
   const resetAll = () => {
     setParams(DEFAULT_BOX_PARAMS)
     setModel(undefined)
-    setError(undefined)
-    setStatus('默认空盒已生成，可直接导出 3MF。')
+    setUploadError(undefined)
+    setSquareCutouts(DEFAULT_SQUARE_CUTOUTS)
   }
 
   const export3mf = () => {
@@ -162,7 +153,6 @@ export function BoxGenerator() {
     anchor.click()
     anchor.remove()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-    setStatus('3MF 文件已生成。')
   }
 
   return (
@@ -195,19 +185,19 @@ export function BoxGenerator() {
 
       <main className="container-wrapper flex flex-1 flex-col">
         <div className="flex flex-1 flex-col lg:min-h-0 lg:flex-row">
-          <section className="order-1 flex-1 overflow-auto bg-secondary/60 p-4 sm:p-8 lg:min-h-[calc(100svh-3.5rem)] lg:p-10">
-            <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
-              <BoxPreview mesh={mesh} modelGeometry={previewGeometry} showModel={showModel} />
-              {warnings.length > 0 ? (
-                <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-                  {warnings.join(' ')}
-                </div>
-              ) : null}
+          <section className="relative order-1 h-[52svh] min-h-[360px] flex-1 overflow-hidden bg-secondary/60 lg:h-auto lg:min-h-[calc(100svh-3.5rem)]">
+            <div className="absolute inset-0">
+              <BoxPreview mesh={mesh} modelGeometry={previewGeometry} showModel />
             </div>
+            {warnings.length > 0 ? (
+              <div className="pointer-events-none absolute inset-x-4 bottom-4 z-10 rounded-md border border-amber-300 bg-amber-50/95 px-4 py-3 text-sm text-amber-950 shadow-sm backdrop-blur dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-100">
+                {warnings.join(' ')}
+              </div>
+            ) : null}
           </section>
 
           <aside className="order-2 w-full shrink-0 lg:w-80">
-            <div className="space-y-4 p-4 lg:sticky lg:top-14 lg:max-h-[calc(100svh-3.5rem)] lg:overflow-auto lg:py-10 lg:pr-6">
+            <div className="space-y-4 p-4 lg:sticky lg:top-14 lg:max-h-[calc(100svh-3.5rem)] lg:overflow-auto lg:pr-6">
               <div className="flex gap-2">
                 <Button
                   type="button"
@@ -248,40 +238,70 @@ export function BoxGenerator() {
               />
 
               <section className="rounded-lg bg-secondary/60 p-4">
-                <div className="mb-3 flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      M-Box
-                    </p>
-                    <h1 className="text-lg font-semibold leading-tight">3D 打印收纳盒生成器</h1>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Grid3X3 className="size-4 text-muted-foreground" />
+                    <h2 className="text-sm font-semibold">无模型镂空</h2>
                   </div>
-                  <div className="rounded-md border bg-background p-2">
-                    <Box className="size-5 text-foreground" />
-                  </div>
+                  <Button
+                    type="button"
+                    variant={!model && squareCutouts.enabled ? 'default' : 'outline'}
+                    size="sm"
+                    disabled={!!model}
+                    onClick={() => updateSquareCutout('enabled', !squareCutouts.enabled)}
+                  >
+                    方形阵列
+                  </Button>
                 </div>
-                <div className="flex items-start gap-2 text-sm">
-                  {error ? (
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
-                  ) : (
-                    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-                  )}
-                  <span className={error ? 'text-destructive' : 'text-muted-foreground'}>
-                    {error ?? status}
-                  </span>
+                <div className="space-y-4">
+                  <NumberControl
+                    label="单格边长"
+                    value={squareCutouts.sizeMm}
+                    min={6}
+                    max={80}
+                    step={1}
+                    disabled={!!model || !squareCutouts.enabled}
+                    onChange={(value) => updateSquareCutout('sizeMm', value)}
+                  />
+                  <NumberControl
+                    label="列数"
+                    value={squareCutouts.columns}
+                    min={1}
+                    max={8}
+                    step={1}
+                    unit=""
+                    disabled={!!model || !squareCutouts.enabled}
+                    onChange={(value) => updateSquareCutout('columns', value)}
+                  />
+                  <NumberControl
+                    label="行数"
+                    value={squareCutouts.rows}
+                    min={1}
+                    max={8}
+                    step={1}
+                    unit=""
+                    disabled={!!model || !squareCutouts.enabled}
+                    onChange={(value) => updateSquareCutout('rows', value)}
+                  />
+                  <NumberControl
+                    label="间距"
+                    value={squareCutouts.gapMm}
+                    min={0}
+                    max={30}
+                    step={1}
+                    disabled={!!model || !squareCutouts.enabled}
+                    onChange={(value) => updateSquareCutout('gapMm', value)}
+                  />
+                  <NumberControl
+                    label="口沿圆角"
+                    value={squareCutouts.cornerRadiusMm}
+                    min={0}
+                    max={12}
+                    step={0.5}
+                    disabled={!!model || !squareCutouts.enabled}
+                    onChange={(value) => updateSquareCutout('cornerRadiusMm', value)}
+                  />
                 </div>
-                {model ? (
-                  <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                    {model.fileName}
-                    <br />
-                    {model.format.toUpperCase()} · {model.triangleCount.toLocaleString()} triangles
-                    <br />
-                    {model.sizeMm.x} × {model.sizeMm.y} × {model.sizeMm.z} mm
-                  </p>
-                ) : (
-                  <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                    当前为默认空盒。上传模型后会按模型俯视轮廓生成内腔。
-                  </p>
-                )}
               </section>
 
               <section className="rounded-lg bg-secondary/60 p-4">
@@ -368,57 +388,6 @@ export function BoxGenerator() {
                   />
                 </div>
               </section>
-
-              <section className="rounded-lg bg-secondary/60 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-sm font-semibold">模型姿态</h2>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={!model}
-                    onClick={() => setShowModel((value) => !value)}
-                  >
-                    {showModel ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
-                    预览
-                  </Button>
-                </div>
-                <div className="grid grid-cols-4 gap-2">
-                  <Button type="button" variant="outline" disabled={!model} onClick={() => rotateModel('rotateX')}>
-                    <RotateCw className="size-4" />X
-                  </Button>
-                  <Button type="button" variant="outline" disabled={!model} onClick={() => rotateModel('rotateY')}>
-                    <RotateCw className="size-4" />Y
-                  </Button>
-                  <Button type="button" variant="outline" disabled={!model} onClick={() => rotateModel('rotateZ')}>
-                    <RotateCw className="size-4" />Z
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    disabled={!model}
-                    onClick={resetModelTransform}
-                    title="重置姿态"
-                  >
-                    <RotateCcw className="size-4" />
-                  </Button>
-                </div>
-                <div className="mt-3 grid grid-cols-4 gap-2">
-                  {[0.1, 1, 10, 25.4].map((scale) => (
-                    <Button
-                      key={scale}
-                      type="button"
-                      variant={model?.transform.scale === scale ? 'default' : 'outline'}
-                      size="sm"
-                      disabled={!model}
-                      onClick={() => updateScale(scale)}
-                    >
-                      {scale}x
-                    </Button>
-                  ))}
-                </div>
-              </section>
             </div>
           </aside>
         </div>
@@ -427,10 +396,19 @@ export function BoxGenerator() {
   )
 }
 
-function NumberControl({ label, value, min, max, step, unit = 'mm', onChange }: NumberControlProps) {
+function NumberControl({
+  label,
+  value,
+  min,
+  max,
+  step,
+  unit = 'mm',
+  disabled = false,
+  onChange,
+}: NumberControlProps) {
   const safeValue = Number.isFinite(value) ? value : min
   return (
-    <label className="grid gap-2">
+    <label className={`grid gap-2 ${disabled ? 'opacity-50' : ''}`}>
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm text-muted-foreground">{label}</span>
         <span className="flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-sm tabular-nums">
@@ -442,6 +420,7 @@ function NumberControl({ label, value, min, max, step, unit = 'mm', onChange }: 
             max={max}
             step={step}
             value={safeValue}
+            disabled={disabled}
             onChange={(event) => onChange(Number(event.target.value))}
           />
           {unit}
@@ -454,6 +433,7 @@ function NumberControl({ label, value, min, max, step, unit = 'mm', onChange }: 
         max={max}
         step={step}
         value={safeValue}
+        disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value))}
         className="h-2 w-full accent-primary"
       />

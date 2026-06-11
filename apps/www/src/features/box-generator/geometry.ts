@@ -14,6 +14,7 @@ import {
   type Point2,
   type Point3,
   type Size3,
+  type SquareCutoutParams,
   type Triangle,
 } from './types'
 
@@ -152,7 +153,72 @@ export function createFootprint(
   }
 }
 
-export function generateStorageBox(paramsInput: BoxParams, footprint?: Point2[]): MeshData {
+export function createSquareCutoutContours(
+  paramsInput: BoxParams,
+  cutoutsInput: SquareCutoutParams,
+) {
+  const params = clampBoxParams(paramsInput)
+  const cutouts = clampSquareCutoutParams(cutoutsInput)
+  const innerLength = Math.max(12, params.lengthMm - params.wallMm * 2)
+  const innerWidth = Math.max(12, params.widthMm - params.wallMm * 2)
+  const minPocketSize = 6
+  const maxGapByLength =
+    cutouts.columns > 1
+      ? Math.max(0, (innerLength - cutouts.columns * minPocketSize) / (cutouts.columns - 1))
+      : cutouts.gapMm
+  const maxGapByWidth =
+    cutouts.rows > 1
+      ? Math.max(0, (innerWidth - cutouts.rows * minPocketSize) / (cutouts.rows - 1))
+      : cutouts.gapMm
+  const safeGap = Math.min(cutouts.gapMm, maxGapByLength, maxGapByWidth)
+  const maxSizeByLength = (innerLength - (cutouts.columns - 1) * safeGap) / cutouts.columns
+  const maxSizeByWidth = (innerWidth - (cutouts.rows - 1) * safeGap) / cutouts.rows
+  const safeSize = Math.max(minPocketSize, Math.min(cutouts.sizeMm, maxSizeByLength, maxSizeByWidth))
+  const totalLength = cutouts.columns * safeSize + (cutouts.columns - 1) * safeGap
+  const totalWidth = cutouts.rows * safeSize + (cutouts.rows - 1) * safeGap
+  const startX = -totalLength / 2 + safeSize / 2
+  const startY = -totalWidth / 2 + safeSize / 2
+  const radius = Math.min(cutouts.cornerRadiusMm, safeSize / 4)
+  const contours: Point2[][] = []
+
+  for (let row = 0; row < cutouts.rows; row += 1) {
+    for (let column = 0; column < cutouts.columns; column += 1) {
+      const centerX = startX + column * (safeSize + safeGap)
+      const centerY = startY + row * (safeSize + safeGap)
+      const contour = roundedRectContour(safeSize, safeSize, radius, radius > EPSILON ? 3 : 1)
+        .map((point) => ({ x: point.x + centerX, y: point.y + centerY }))
+      contours.push(ensureCounterClockwise(cleanPolygon(contour)))
+    }
+  }
+
+  const warnings: string[] = []
+  if (safeGap !== cutouts.gapMm || safeSize !== cutouts.sizeMm) {
+    warnings.push('方形镂空阵列已按当前盒体内腔自动收紧。')
+  }
+
+  return { contours, warnings }
+}
+
+export function clampSquareCutoutParams(params: SquareCutoutParams): SquareCutoutParams {
+  const columns = Math.round(clamp(params.columns, 1, 8))
+  const rows = Math.round(clamp(params.rows, 1, 8))
+  const sizeMm = clamp(params.sizeMm, 6, 120)
+  const gapMm = clamp(params.gapMm, 0, 40)
+
+  return {
+    enabled: params.enabled,
+    sizeMm,
+    columns,
+    rows,
+    gapMm,
+    cornerRadiusMm: clamp(params.cornerRadiusMm, 0, sizeMm / 4),
+  }
+}
+
+export function generateStorageBox(
+  paramsInput: BoxParams,
+  footprint?: Point2[] | Point2[][],
+): MeshData {
   const params = clampBoxParams(paramsInput)
   const outer = ensureCounterClockwise(
     roundedRectContour(
@@ -162,18 +228,7 @@ export function generateStorageBox(paramsInput: BoxParams, footprint?: Point2[])
       Math.max(6, Math.round(params.contourSmoothing / 6)),
     ),
   )
-  const inner = ensureCounterClockwise(
-    cleanPolygon(
-      footprint && footprint.length >= 3
-        ? footprint
-        : roundedRectContour(
-            params.lengthMm - params.wallMm * 2,
-            params.widthMm - params.wallMm * 2,
-            Math.max(0, params.cornerRadiusMm - params.wallMm),
-            8,
-          ),
-    ),
-  )
+  const inners = normalizeFootprints(footprint, params)
 
   const vertices: Point3[] = []
   const triangles: Triangle[] = []
@@ -193,23 +248,29 @@ export function generateStorageBox(paramsInput: BoxParams, footprint?: Point2[])
 
   const outerBottom = outer.map((point) => addVertex(point, 0))
   const outerTop = outer.map((point) => addVertex(point, params.heightMm))
-  const innerFloor = inner.map((point) => addVertex(point, params.bottomMm))
-  const innerTop = inner.map((point) => addVertex(point, params.heightMm))
+  const innerFloors = inners.map((inner) => inner.map((point) => addVertex(point, params.bottomMm)))
+  const innerTops = inners.map((inner) => inner.map((point) => addVertex(point, params.heightMm)))
 
   addPolygonFace(outer, outerBottom, triangles, true)
-  addPolygonFace(inner, innerFloor, triangles, false)
-  addTopAnnulus(outer, inner, outerTop, innerTop, triangles)
+  inners.forEach((inner, index) => {
+    addPolygonFace(inner, innerFloors[index], triangles, false)
+  })
+  addTopAnnulus(outer, inners, outerTop, innerTops, triangles)
 
   for (let index = 0; index < outer.length; index += 1) {
     const next = (index + 1) % outer.length
     addQuad(outerBottom[index], outerBottom[next], outerTop[next], outerTop[index])
   }
 
-  for (let index = 0; index < inner.length; index += 1) {
-    const next = (index + 1) % inner.length
-    addQuad(innerFloor[index], innerTop[next], innerFloor[next], innerFloor[index])
-    addTriangle(innerFloor[index], innerTop[index], innerTop[next])
-  }
+  inners.forEach((inner, holeIndex) => {
+    const innerFloor = innerFloors[holeIndex]
+    const innerTop = innerTops[holeIndex]
+    for (let index = 0; index < inner.length; index += 1) {
+      const next = (index + 1) % inner.length
+      addTriangle(innerFloor[index], innerTop[next], innerFloor[next])
+      addTriangle(innerFloor[index], innerTop[index], innerTop[next])
+    }
+  })
 
   return { vertices, triangles }
 }
@@ -257,15 +318,17 @@ export function getMeshSize(mesh: MeshData): Size3 {
 
 function addTopAnnulus(
   outer: Point2[],
-  inner: Point2[],
+  inners: Point2[][],
   outerIndices: number[],
-  innerIndices: number[],
+  innerIndices: number[][],
   triangles: Triangle[],
 ) {
-  const hole = [...inner].reverse()
-  const holeIndices = [...innerIndices].reverse()
-  const faces = ShapeUtils.triangulateShape(toVector2List(outer), [toVector2List(hole)])
-  const combined = [...outerIndices, ...holeIndices]
+  const holes = inners.map((inner) => toVector2List([...inner].reverse()))
+  const combined = [
+    ...outerIndices,
+    ...innerIndices.flatMap((indices) => [...indices].reverse()),
+  ]
+  const faces = ShapeUtils.triangulateShape(toVector2List(outer), holes)
   faces.forEach((face) => {
     triangles.push([combined[face[0]], combined[face[1]], combined[face[2]]])
   })
@@ -319,6 +382,30 @@ function roundedRectContour(length: number, width: number, radius: number, segme
     }
     return points
   })
+}
+
+function normalizeFootprints(footprint: Point2[] | Point2[][] | undefined, params: BoxParams) {
+  const fallback = roundedRectContour(
+    params.lengthMm - params.wallMm * 2,
+    params.widthMm - params.wallMm * 2,
+    Math.max(0, params.cornerRadiusMm - params.wallMm),
+    8,
+  )
+  const rawContours =
+    footprint && footprint.length > 0
+      ? isPointList(footprint)
+        ? [footprint]
+        : footprint
+      : [fallback]
+  const contours = rawContours
+    .map((contour) => ensureCounterClockwise(cleanPolygon(contour)))
+    .filter((contour) => contour.length >= 3 && Math.abs(signedArea(contour)) > 1)
+
+  return contours.length > 0 ? contours : [ensureCounterClockwise(cleanPolygon(fallback))]
+}
+
+function isPointList(points: Point2[] | Point2[][]): points is Point2[] {
+  return !Array.isArray(points[0])
 }
 
 function concaveHull(points: Point2[], smoothing: number): Point2[] | undefined {
