@@ -29,6 +29,52 @@ import { build3mfFileName, create3mfBlob } from './export-3mf'
 import { MODEL_FILE_ACCEPT, parseModelFile, updateParsedModelTransform } from './model-loader'
 import { BoxPreview } from './BoxPreview'
 
+const PARAMS_STORAGE_KEY = 'm-box:box-params:v1'
+
+const NUMERIC_PARAM_KEYS = [
+  'lengthMm',
+  'widthMm',
+  'heightMm',
+  'wallMm',
+  'bottomMm',
+  'cornerRadiusMm',
+  'clearanceXYMm',
+  'clearanceZMm',
+  'contourSmoothing',
+  'cavityDepthMm',
+] as const
+
+/** 从本地缓存读取参数;逐字段校验并钳制,缓存损坏时返回 undefined */
+function loadStoredParams(): BoxParams | undefined {
+  if (typeof window === 'undefined') {
+    return undefined
+  }
+  try {
+    const raw = window.localStorage.getItem(PARAMS_STORAGE_KEY)
+    if (!raw) {
+      return undefined
+    }
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) {
+      return undefined
+    }
+    const record = parsed as Record<string, unknown>
+    const merged: BoxParams = { ...DEFAULT_BOX_PARAMS }
+    NUMERIC_PARAM_KEYS.forEach((key) => {
+      const value = record[key]
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        merged[key] = value
+      }
+    })
+    if (record.cavityMode === 'rect' || record.cavityMode === 'contour') {
+      merged.cavityMode = record.cavityMode
+    }
+    return clampBoxParams(merged)
+  } catch {
+    return undefined
+  }
+}
+
 type NumberControlProps = {
   label: string
   value: number
@@ -49,6 +95,28 @@ export function BoxGenerator() {
   const [isParsing, setIsParsing] = useState(false)
   const [confirmResetOpen, setConfirmResetOpen] = useState(false)
   const [showModel, setShowModel] = useState(true)
+  const storageReadyRef = useRef(false)
+
+  // 挂载后读取本地缓存(避免 SSR 水合不一致)
+  useEffect(() => {
+    const stored = loadStoredParams()
+    if (stored) {
+      setParams(stored)
+    }
+    storageReadyRef.current = true
+  }, [])
+
+  // 参数变化时写入本地缓存
+  useEffect(() => {
+    if (!storageReadyRef.current || typeof window === 'undefined') {
+      return
+    }
+    try {
+      window.localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(params))
+    } catch {
+      // 隐私模式等场景下写入失败,忽略即可
+    }
+  }, [params])
 
   // 模型预览底面贴合腔底(高度 - 镂空深度)
   const cavityFloorZ = Math.max(params.bottomMm, params.heightMm - params.cavityDepthMm)
