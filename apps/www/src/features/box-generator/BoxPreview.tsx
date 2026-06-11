@@ -40,6 +40,8 @@ type Viewer = {
   hasFitted: boolean
   /** 上次取景时的包围球半径,用于判断内容尺寸是否发生显著变化 */
   lastFitRadius?: number
+  /** 适配取景的相机距离,作为缩放比例 100% 的基准 */
+  fitDistance?: number
   /** 双击重置视角的过渡动画状态 */
   animation?: CameraAnimation
 }
@@ -59,6 +61,7 @@ const IDENTITY_QUATERNION = new Quaternion()
 
 export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const zoomLabelRef = useRef<HTMLSpanElement | null>(null)
   const viewerRef = useRef<Viewer | null>(null)
   const boxGeometry = useMemo(() => meshToBufferGeometry(mesh), [mesh])
 
@@ -148,8 +151,27 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
         }
       }
       controls.update()
+      updateZoomLabel()
       renderer.render(scene, camera)
       frame = window.requestAnimationFrame(render)
+    }
+
+    // 以适配取景距离为 100%,显示当前缩放比例
+    let lastZoomText = ''
+    const updateZoomLabel = () => {
+      const label = zoomLabelRef.current
+      if (!label || !viewer.fitDistance) {
+        return
+      }
+      const distance = camera.position.distanceTo(controls.target)
+      if (distance <= 0) {
+        return
+      }
+      const text = `${Math.round((viewer.fitDistance / distance) * 100)}%`
+      if (text !== lastZoomText) {
+        lastZoomText = text
+        label.textContent = text
+      }
     }
     render()
 
@@ -261,11 +283,20 @@ export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) 
   }, [boxGeometry, modelGeometry, showModel])
 
   return (
-    <div
-      ref={containerRef}
-      className="h-full w-full overflow-hidden"
-      aria-label="3D preview of the generated storage box"
-    />
+    <div className="relative h-full w-full">
+      <div
+        ref={containerRef}
+        className="h-full w-full overflow-hidden"
+        aria-label="3D preview of the generated storage box"
+      />
+      <span
+        ref={zoomLabelRef}
+        aria-label="当前缩放比例"
+        className="pointer-events-none absolute bottom-3 right-3 select-none rounded-md border bg-background/70 px-2 py-1 text-xs tabular-nums text-muted-foreground backdrop-blur"
+      >
+        100%
+      </span>
+    </div>
   )
 }
 
@@ -296,6 +327,7 @@ function fitView(viewer: Viewer, resetOrientation: boolean) {
 
   const fov = (camera.fov * Math.PI) / 180
   const distance = (radius / Math.sin(fov / 2)) * 1.1
+  viewer.fitDistance = distance
 
   // 内容尺寸变化超过 25%(如上传模型后自动适配)时,重新缩放到合适取景
   const sizeChangedSignificantly =
@@ -359,6 +391,7 @@ function startResetAnimation(viewer: Viewer) {
     toLen: distance,
   }
   viewer.lastFitRadius = radius
+  viewer.fitDistance = distance
   // 动画期间锁定交互,避免拖拽与动画互相干扰
   controls.enabled = false
 }
