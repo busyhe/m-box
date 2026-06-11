@@ -1,9 +1,9 @@
 export const siteConfig = {
-  name: 'TanStack Starter',
+  name: 'M-Box Generator',
   url: import.meta.env.VITE_SITE_URL || 'http://localhost:3000',
   ogImage:
-    'https://og-image-craigary.vercel.app/**TanStack%20Starter**.png?theme=dark&md=1&fontSize=100px&images=https%3A%2F%2Fnobelium.vercel.app%2Flogo-for-dark-bg.svg',
-  description: 'A starter template for TanStack Start with Shadcn UI and Tailwind CSS',
+    'https://og-image-craigary.vercel.app/**M-Box%20Generator**.png?theme=light&md=1&fontSize=100px',
+  description: 'Browser-based 3D printable storage box generator with STL and 3MF model fitting.',
   links: {
     homepage: 'https://busyhe.com',
     twitter: 'https://twitter.com/busyhe_',

@@ -1,6 +1,4 @@
 import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
-import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
-import { TanStackDevtools } from '@tanstack/react-devtools'
 import { Link } from '@tanstack/react-router'
 import { Providers } from '@/components/providers'
 import { Analytics } from '@/components/analytics'
@@ -16,7 +14,7 @@ export const Route = createRootRoute({
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
       { title: siteConfig.name },
       { name: 'description', content: siteConfig.description },
-      { name: 'keywords', content: 'TanStack,React,Starter' },
+      { name: 'keywords', content: '3D printing,3MF,STL,storage box,generator' },
       { name: 'author', content: 'busyhe' },
       { name: 'creator', content: 'busyhe' },
       { name: 'theme-color', content: META_THEME_COLORS.light, media: '(prefers-color-scheme: light)' },
@@ -72,17 +70,6 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       <body className="font-sans antialiased">
         <Providers>{children}</Providers>
         <Analytics />
-        <TanStackDevtools
-          config={{
-            position: 'bottom-right',
-          }}
-          plugins={[
-            {
-              name: 'Tanstack Router',
-              render: <TanStackRouterDevtoolsPanel />,
-            },
-          ]}
-        />
         <Scripts />
       </body>
     </html>
