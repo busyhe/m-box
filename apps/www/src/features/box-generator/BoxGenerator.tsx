@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Link } from '@tanstack/react-router'
 import {
   Box,
   Circle,
@@ -487,12 +488,12 @@ export function BoxGenerator() {
       <header className="border-grid sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container-wrapper">
           <div className="container flex h-14 items-center gap-4">
-            <div className="flex items-center gap-2">
+            <Link to="/" className="flex items-center gap-2 transition-opacity hover:opacity-80">
               <span className="flex size-6 items-center justify-center rounded-sm border bg-muted">
                 <Box className="size-4" />
               </span>
               <span className="font-bold">M-Box</span>
-            </div>
+            </Link>
             <div className="ml-auto flex items-center gap-0.5">
               <Button asChild variant="ghost" size="icon" className="h-8 w-8 px-0">
                 <a href={siteConfig.links.github} target="_blank" rel="noreferrer">
