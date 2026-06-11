@@ -59,6 +59,9 @@ type CameraAnimation = {
 
 const IDENTITY_QUATERNION = new Quaternion()
 
+/** 适配取景的距离余量;越大默认显示越小,四周留白越多 */
+const FIT_DISTANCE_MARGIN = 1.6
+
 export function BoxPreview({ mesh, modelGeometry, showModel }: BoxPreviewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const zoomLabelRef = useRef<HTMLSpanElement | null>(null)
@@ -326,7 +329,7 @@ function fitView(viewer: Viewer, resetOrientation: boolean) {
   controls.maxDistance = radius * 8
 
   const fov = (camera.fov * Math.PI) / 180
-  const distance = (radius / Math.sin(fov / 2)) * 1.1
+  const distance = (radius / Math.sin(fov / 2)) * FIT_DISTANCE_MARGIN
   viewer.fitDistance = distance
 
   // 内容尺寸变化超过 25%(如上传模型后自动适配)时,重新缩放到合适取景
@@ -371,7 +374,7 @@ function startResetAnimation(viewer: Viewer) {
   bounds.getBoundingSphere(sphere)
   const radius = Math.max(sphere.radius, 30)
   const fov = (camera.fov * Math.PI) / 180
-  const distance = (radius / Math.sin(fov / 2)) * 1.1
+  const distance = (radius / Math.sin(fov / 2)) * FIT_DISTANCE_MARGIN
   const toDir = new Vector3(0.72, -0.82, 0.58).normalize()
 
   const fromTarget = controls.target.clone()
