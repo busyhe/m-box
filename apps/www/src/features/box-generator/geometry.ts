@@ -370,6 +370,89 @@ export function createShapeCavities(
   return { cavities, warnings }
 }
 
+/**
+ * 为新图形寻找不与现有镂空腔重叠的摆放位置。
+ * 候选位置按距盒体中心由近到远扫描;放不下时返回 undefined(调用方回退到中心)。
+ */
+export function findShapePlacement(
+  shape: BasicShape,
+  existing: CavitySpec[],
+  params: BoxParams,
+  marginMm = 2,
+): Point2 | undefined {
+  const base = shapeContour({ ...shape, xMm: 0, yMm: 0 })
+  if (base.length < 3) {
+    return undefined
+  }
+
+  const baseBounds = polygonBounds(base)
+  const halfWidth = Math.max(-baseBounds.minX, baseBounds.maxX)
+  const halfHeight = Math.max(-baseBounds.minY, baseBounds.maxY)
+  const limitX = params.lengthMm / 2 - params.wallMm - halfWidth
+  const limitY = params.widthMm / 2 - params.wallMm - halfHeight
+  if (limitX < 0 || limitY < 0) {
+    return undefined
+  }
+
+  const step = 4
+  const candidates: Point2[] = []
+  for (let x = -limitX; x <= limitX + EPSILON; x += step) {
+    for (let y = -limitY; y <= limitY + EPSILON; y += step) {
+      candidates.push({ x, y })
+    }
+  }
+  candidates.sort((a, b) => a.x * a.x + a.y * a.y - (b.x * b.x + b.y * b.y))
+
+  const obstacles = existing.map((cavity) => ({
+    contour: cavity.contour,
+    bounds: polygonBounds(cavity.contour),
+  }))
+
+  for (const candidate of candidates) {
+    const moved = base.map((point) => ({ x: point.x + candidate.x, y: point.y + candidate.y }))
+    // 外扩 margin,保证与现有腔体之间留出间距
+    const expanded = offsetPolygonRadial(moved, marginMm)
+    const bounds = polygonBounds(expanded)
+    let fits = true
+    for (const obstacle of obstacles) {
+      if (
+        bounds.maxX < obstacle.bounds.minX ||
+        bounds.minX > obstacle.bounds.maxX ||
+        bounds.maxY < obstacle.bounds.minY ||
+        bounds.minY > obstacle.bounds.maxY
+      ) {
+        continue
+      }
+      if (polygonsOverlap(expanded, obstacle.contour)) {
+        fits = false
+        break
+      }
+    }
+    if (fits) {
+      return {
+        x: Math.round(candidate.x * 2) / 2,
+        y: Math.round(candidate.y * 2) / 2,
+      }
+    }
+  }
+
+  return undefined
+}
+
+function polygonBounds(points: Point2[]) {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  points.forEach((point) => {
+    minX = Math.min(minX, point.x)
+    minY = Math.min(minY, point.y)
+    maxX = Math.max(maxX, point.x)
+    maxY = Math.max(maxY, point.y)
+  })
+  return { minX, minY, maxX, maxY }
+}
+
 /** 任意两个镂空腔轮廓是否重叠(边相交或互相包含) */
 export function cavitiesOverlapAny(cavities: CavitySpec[]): boolean {
   for (let a = 0; a < cavities.length; a += 1) {

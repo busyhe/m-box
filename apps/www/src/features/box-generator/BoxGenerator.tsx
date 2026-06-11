@@ -35,6 +35,7 @@ import {
   clampBoxParams,
   createFootprint,
   createShapeCavities,
+  findShapePlacement,
   generateStorageBox,
   positionsToPreviewGeometry,
 } from './geometry'
@@ -393,18 +394,21 @@ export function BoxGenerator() {
   const addShape = (kind: ShapeKind) => {
     const maxDepth = Math.max(2, params.heightMm - params.bottomMm)
     const defaults = SHAPE_DEFAULT_SIZES[kind]
+    const prototype: BasicShape = {
+      id: createShapeId(),
+      kind,
+      xMm: 0,
+      yMm: 0,
+      sizeXMm: defaults.x,
+      sizeYMm: defaults.y,
+      cornerRadiusMm: 2,
+      depthMm: Math.min(params.cavityDepthMm, maxDepth),
+    }
+    // 已有镂空时自动寻找不重叠的位置;实在放不下则回退到中心
+    const placement = cavities.length > 0 ? findShapePlacement(prototype, cavities, params) : undefined
     setShapes((current) => [
       ...current,
-      {
-        id: createShapeId(),
-        kind,
-        xMm: 0,
-        yMm: 0,
-        sizeXMm: defaults.x,
-        sizeYMm: defaults.y,
-        cornerRadiusMm: 2,
-        depthMm: Math.min(params.cavityDepthMm, maxDepth),
-      },
+      { ...prototype, xMm: placement?.x ?? 0, yMm: placement?.y ?? 0 },
     ])
   }
 
