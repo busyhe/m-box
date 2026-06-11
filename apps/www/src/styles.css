@@ -59,6 +59,14 @@
   animation: glow-pulse 5s ease-in-out infinite;
 }
 
+.landing-hero-grid {
+  min-height: clamp(30rem, calc(100svh - 8rem), 40rem);
+}
+
+.landing-hero-art {
+  transform-origin: 50% 55%;
+}
+
 /* 标题渐变流光 */
 .text-shimmer {
   background: linear-gradient(
@@ -82,6 +90,16 @@
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse 80% 60% at 50% 35%, black 30%, transparent 100%);
   -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 35%, black 30%, transparent 100%);
+}
+
+@media (max-width: 1023px) {
+  .landing-hero-grid {
+    min-height: auto;
+  }
+
+  .landing-hero-art {
+    max-width: min(22rem, 86vw);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

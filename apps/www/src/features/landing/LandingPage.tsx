@@ -194,24 +194,44 @@ function Reveal({ children, delay = 0, className = '' }: {
 /** 悬浮的等距收纳盒插画 */
 function HeroIllustration() {
   return (
-    <div className="animate-float relative mx-auto w-full max-w-md">
-      <div className="animate-glow absolute inset-0 -z-10 rounded-full bg-primary/25 blur-3xl" />
-      <svg viewBox="0 0 320 260" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full">
+    <div className="animate-float landing-hero-art relative mx-auto w-full max-w-md lg:max-w-lg" aria-hidden="true">
+      <div className="animate-glow absolute inset-x-6 top-8 -z-10 h-56 rounded-full bg-primary/20 blur-3xl" />
+      <svg
+        viewBox="0 0 360 300"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        className="w-full drop-shadow-2xl"
+      >
+        <defs>
+          <linearGradient id="boxTop" x1="87" x2="273" y1="70" y2="158" gradientUnits="userSpaceOnUse">
+            <stop className="text-background" stopColor="currentColor" />
+            <stop offset="1" className="text-secondary" stopColor="currentColor" />
+          </linearGradient>
+          <linearGradient id="boxLeft" x1="52" x2="181" y1="118" y2="256" gradientUnits="userSpaceOnUse">
+            <stop className="text-secondary" stopColor="currentColor" />
+            <stop offset="1" className="text-muted" stopColor="currentColor" />
+          </linearGradient>
+          <linearGradient id="boxRight" x1="308" x2="180" y1="118" y2="256" gradientUnits="userSpaceOnUse">
+            <stop className="text-card" stopColor="currentColor" />
+            <stop offset="1" className="text-secondary" stopColor="currentColor" />
+          </linearGradient>
+        </defs>
+        <ellipse cx="180" cy="260" rx="116" ry="18" className="fill-primary/10" />
         {/* 盒体外壁 */}
-        <path d="M160 40 280 100v90L160 250 40 190v-90L160 40Z" className="fill-card stroke-border" strokeWidth="2" />
+        <path d="M180 52 308 116v96L180 276 52 212v-96L180 52Z" className="fill-card stroke-border" strokeWidth="2.5" />
         {/* 顶面 */}
-        <path d="M160 40 280 100 160 160 40 100 160 40Z" className="fill-secondary stroke-border" strokeWidth="2" />
+        <path d="M180 52 308 116 180 180 52 116 180 52Z" fill="url(#boxTop)" className="stroke-border" strokeWidth="2.5" />
         {/* 内腔 */}
-        <path d="M160 64 244 106 160 148 76 106 160 64Z" className="fill-background stroke-border" strokeWidth="1.5" />
+        <path d="M180 80 262 121 180 162 98 121 180 80Z" className="fill-background stroke-border" strokeWidth="2" />
         {/* 镂空槽位 */}
-        <ellipse cx="122" cy="100" rx="22" ry="11" className="fill-primary/15 stroke-primary/60" strokeWidth="1.5" />
-        <ellipse cx="196" cy="112" rx="26" ry="9" className="fill-primary/15 stroke-primary/60" strokeWidth="1.5" />
-        <ellipse cx="160" cy="84" rx="14" ry="7" className="fill-primary/15 stroke-primary/60" strokeWidth="1.5" />
+        <ellipse cx="136" cy="114" rx="23" ry="12" className="fill-primary/15 stroke-primary/70" strokeWidth="2" />
+        <ellipse cx="222" cy="126" rx="29" ry="10" className="fill-primary/15 stroke-primary/70" strokeWidth="2" />
+        <ellipse cx="180" cy="94" rx="15" ry="8" className="fill-primary/15 stroke-primary/70" strokeWidth="2" />
         {/* 左右侧面投影 */}
-        <path d="M40 100v90l120 60v-90L40 100Z" className="fill-secondary/70" />
-        <path d="M280 100v90l-120 60v-90l120-60Z" className="fill-secondary/40" />
+        <path d="M52 116v96l128 64v-96L52 116Z" fill="url(#boxLeft)" className="stroke-border" strokeWidth="2" />
+        <path d="M308 116v96l-128 64v-96l128-64Z" fill="url(#boxRight)" className="stroke-border" strokeWidth="2" />
         {/* 棱线 */}
-        <path d="M160 160v90M40 100l120 60 120-60" className="stroke-border" strokeWidth="2" />
+        <path d="M180 180v96M52 116l128 64 128-64" className="stroke-border" strokeWidth="2.5" />
       </svg>
     </div>
   )
@@ -293,14 +313,14 @@ export function LandingPage() {
           <ParticleField className="pointer-events-none absolute inset-0 -z-10 size-full" />
           <div className="bg-grid-fade pointer-events-none absolute inset-0 -z-20" />
           <div className="container-wrapper">
-            <div className="container grid items-center gap-12 py-20 md:py-28 lg:grid-cols-2 lg:py-32">
+            <div className="landing-hero-grid container grid items-center gap-10 py-14 md:py-20 lg:grid-cols-[minmax(0,0.9fr)_minmax(22rem,1fr)] lg:gap-16 lg:py-16">
               <div className="flex flex-col items-start gap-6">
                 <div className="animate-fade-in-up inline-flex items-center gap-1.5 rounded-full border bg-card px-3 py-1 text-xs font-medium text-muted-foreground shadow-xs">
                   <Sparkles className="size-3.5 text-primary" />
                   开源 · 免费 · 纯浏览器运行
                 </div>
                 <h1
-                  className="animate-fade-in-up text-4xl font-bold tracking-tight text-balance md:text-5xl lg:text-6xl"
+                  className="animate-fade-in-up max-w-2xl text-4xl font-bold tracking-tight text-balance md:text-5xl lg:text-6xl"
                   style={{ animationDelay: '100ms' }}
                 >
                   为你的每一件物品
@@ -314,7 +334,7 @@ export function LandingPage() {
                   上传模型，自动生成贴合轮廓的收纳内腔；调整参数，实时预览，一键导出可打印的
                   3MF 文件。
                 </p>
-                <div className="animate-fade-in-up flex flex-wrap gap-3" style={{ animationDelay: '300ms' }}>
+                <div className="animate-fade-in-up flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap" style={{ animationDelay: '300ms' }}>
                   <Button asChild size="lg" className="group gap-2 shadow-lg shadow-primary/20">
                     <Link to="/app">
                       免费开始制作
@@ -352,7 +372,7 @@ export function LandingPage() {
               <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {FEATURES.map((feature, index) => (
                   <Reveal key={feature.title} delay={index * 80}>
-                    <div className="group h-full rounded-xl border bg-card p-6 shadow-xs transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5">
+                    <div className="group h-full rounded-lg border bg-card p-6 shadow-xs transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5">
                       <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-300 group-hover:scale-110 [&_svg]:size-5">
                         {feature.icon}
                       </div>
@@ -379,7 +399,7 @@ export function LandingPage() {
               <div className="mt-12 grid gap-6 md:grid-cols-3">
                 {STEPS.map((item, index) => (
                   <Reveal key={item.step} delay={index * 120}>
-                    <div className="relative h-full rounded-xl border bg-card p-6 shadow-xs">
+                    <div className="relative h-full rounded-lg border bg-card p-6 shadow-xs">
                       <span className="text-4xl font-bold text-primary/15 tabular-nums">{item.step}</span>
                       <h3 className="mt-2 font-semibold">{item.title}</h3>
                       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{item.description}</p>
